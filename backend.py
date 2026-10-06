@@ -215,8 +215,14 @@ def process_report():
         session_info = json.load(f)
 
     def progress_cb(info):
+        # 处理器第10步回调会带 status=done，但此时输出文件尚未生成；
+        # 统一降级为 processing，终态由 run_process 在输出完成后设置，
+        # 避免前端过早判定完成而读到写入一半的文件
+        st = info["status"]
+        if st == "done":
+            st = "processing"
         processing_status["daily_report"] = {
-            "status": info["status"],
+            "status": st,
             "progress": info["progress"],
             "message": info["message"],
             "step": info["step"],
@@ -291,7 +297,7 @@ def preview_data():
     import openpyxl
     wb = openpyxl.load_workbook(outputs[0], data_only=True)
 
-    # 读取通报表，解析为结构化数据（新78列结构，数据行 R7-R12）
+    # 读取通报表，解析为结构化数据（新78列结构，数据行 R7-R11，鹤壁行已去除）
     tongbao_rows = []
     if "通报" in wb.sheetnames:
         ws = wb["通报"]
@@ -300,7 +306,7 @@ def preview_data():
         #     O(15)毛利目标 P(16)毛利含 Q(17)毛利剔 R(18)毛利完成率 S(19)毛利率
         #     T(20)名次 V(22)综合完成率
         raw_rows = []
-        for row in ws.iter_rows(min_row=7, max_row=12, values_only=True):
+        for row in ws.iter_rows(min_row=7, max_row=11, values_only=True):
             raw_rows.append(list(row))
 
         def v(vals, c):

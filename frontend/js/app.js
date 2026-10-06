@@ -469,26 +469,34 @@ function getAdjustTypeLabel(type) {
 }
 
 async function showAddAdjustDialog() {
-    // 从后端获取完整站点清单（含片区分组），获取失败时回退到内置清单
-    let stations = [];
+    // 从后端获取完整站点清单（含片区分组），二级菜单：先选县区/片区，再选站点
+    let byRegion = {};
     try {
         const result = await api('/api/maintenance/station-regions');
         const regionMap = result.station_regions || {};
-        // 按片区分组排序，便于查找
-        const byRegion = {};
         Object.entries(regionMap).forEach(([name, region]) => {
             if (!byRegion[region]) byRegion[region] = [];
             byRegion[region].push(name);
         });
-        ['淇县', '浚县', '市区经营部', '鹤壁', '商客'].forEach(r => {
-            if (byRegion[r]) stations.push(...byRegion[r].sort());
-        });
     } catch (e) {
-        stations = ['淇县', '浚县', '市区经营部', '商客'];
+        byRegion = {'淇县': ['淇县'], '浚县': ['浚县'], '市区经营部': ['市区经营部'], '商客': ['商客']};
     }
+    window._stationByRegion = byRegion;
+
+    const zhSort = (a, b) => a.localeCompare(b, 'zh-Hans-CN');
+    const regionOrder = ['淇县', '浚县', '市区经营部', '鹤壁', '商客'];
+    const regions = regionOrder.filter(r => (byRegion[r] || []).length > 0);
+    Object.keys(byRegion).forEach(r => {
+        if (!regions.includes(r) && (byRegion[r] || []).length > 0) regions.push(r);
+    });
+    const defaultRegion = regions[0] || '';
+    const stationOpts = (byRegion[defaultRegion] || []).slice().sort(zhSort)
+        .map(s => `<option value="${s}">${s}</option>`).join('');
+
     showModal('添加调整数据', `
         <div style="display:flex; flex-direction:column; gap:16px;">
-            <div class="text-field"><label>站点名称（可输入关键词筛选）</label><input type="text" id="adjStation" list="stationList" placeholder="输入或选择站点">${stations.length ? `<datalist id="stationList">${stations.map(s=>`<option value="${s}">`).join('')}</datalist>` : ''}</div>
+            <div class="text-field"><label>县区 / 片区</label><select id="adjRegion">${regions.map(r => `<option value="${r}">${r}（${byRegion[r].length}站）</option>`).join('')}</select></div>
+            <div class="text-field"><label>站点名称</label><select id="adjStation">${stationOpts}</select></div>
             <div class="text-field"><label>调整类型</label><select id="adjType"><option value="sales_add">销售调增</option><option value="sales_sub">销售调减</option><option value="profit_add">毛利调增</option><option value="profit_sub">毛利调减</option></select></div>
             <div class="text-field"><label>调整金额（元）</label><input type="number" id="adjValue" placeholder="0.00" step="0.01"></div>
             <div class="text-field"><label>调整原因（选填）</label><input type="text" id="adjReason" placeholder="如：跨站销售调整"></div>
@@ -497,17 +505,26 @@ async function showAddAdjustDialog() {
         {label:'取消', cls:'btn-text', handler:() => closeModal()},
         {label:'添加', cls:'btn-filled', action:'confirmAddAdjust'}
     ]);
-    // 聚焦站点输入框
-    const input = document.getElementById('adjStation');
-    if (input) input.focus();
+    // 县区切换 → 联动刷新站点下拉
+    const regionSel = document.getElementById('adjRegion');
+    if (regionSel) {
+        regionSel.onchange = () => {
+            const sel = document.getElementById('adjStation');
+            if (!sel) return;
+            const sts = (window._stationByRegion[regionSel.value] || []).slice().sort(zhSort);
+            sel.innerHTML = sts.map(s => `<option value="${s}">${s}</option>`).join('');
+        };
+    }
+    const stationSel = document.getElementById('adjStation');
+    if (stationSel) stationSel.focus();
 }
 
 function confirmAddAdjust() {
-    const station = document.getElementById('adjStation').value.trim();
+    const station = (document.getElementById('adjStation')?.value || '').trim();
     const type = document.getElementById('adjType').value;
     const value = parseFloat(document.getElementById('adjValue').value);
     const reason = document.getElementById('adjReason').value.trim();
-    if (!station) { showSnackbar('请输入站点名称', 'warning'); return; }
+    if (!station) { showSnackbar('请选择站点', 'warning'); return; }
     if (isNaN(value) || value === 0) { showSnackbar('请输入有效金额', 'warning'); return; }
     drState.adjustments.push({station, type, value, reason});
     closeModal();

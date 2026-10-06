@@ -12,7 +12,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # 确保 build.py 所在目录在 path 最前面
 sys.path.insert(0, BASE_DIR)
 
-PyInstaller.__main__.run([
+args = [
     os.path.join(BASE_DIR, 'main.py'),
     '--name=非油报表助手',
     '--windowed',
@@ -41,5 +41,14 @@ PyInstaller.__main__.run([
     '--distpath=dist',
     '--workpath=build',
     '--specpath=.',
-    # 图标（如果有的话可以加 --icon=xxx.ico）
-])
+]
+
+# 应用图标（app.ico 存在时启用）
+icon_path = os.path.join(BASE_DIR, 'app.ico')
+if os.path.exists(icon_path):
+    args.append(f'--icon={icon_path}')
+    print(f'使用图标: {icon_path}')
+else:
+    print('警告: 未找到 app.ico，将使用默认图标')
+
+PyInstaller.__main__.run(args)

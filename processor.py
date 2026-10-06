@@ -558,8 +558,8 @@ class DailyReportProcessor:
             if reg:
                 tongqi_by_region[reg] = tongqi_by_region.get(reg, 0) + safe_float(amt)
 
-        # 与原日报一致：淇县/浚县/市区经营部/鹤壁(新源站)/商客 五行（鹤壁、商客不参与排名）
-        regions = ["淇县", "浚县", "市区经营部", "鹤壁", "商客"]
+        # 原日报含鹤壁行，但按用户要求通报中不显示鹤壁行（新源站数据在附表中体现）
+        regions = ["淇县", "浚县", "市区经营部", "商客"]
         results = []
         for region in regions:
             row_data = self.fuhe_pivot.loc[region] if region in self.fuhe_pivot.index else pd.Series(0, index=self.fuhe_pivot.columns)
@@ -683,8 +683,9 @@ class DailyReportProcessor:
         align_left = Alignment(horizontal="left", vertical="center")
 
         # ===== 列宽（可见区 A-V） =====
-        widths = {1:5, 2:10, 3:11, 4:13, 5:11, 6:10, 7:9, 8:9, 9:9, 10:9,
-                 11:9, 12:9, 13:9, 14:10, 15:9, 16:9, 17:9, 18:9, 19:9, 20:6, 21:10, 22:9}
+        # 单位列(B/F/N/U)宽度14确保“市区经营部”五个字单行显示
+        widths = {1:5, 2:14, 3:12, 4:14, 5:12, 6:14, 7:10, 8:11, 9:11, 10:10,
+                 11:10, 12:10, 13:10, 14:14, 15:10, 16:11, 17:11, 18:10, 19:10, 20:7, 21:14, 22:10}
         for c, w in widths.items():
             ws.column_dimensions[get_column_letter(c)].width = w
         # 隐藏列 W-BZ（23-78），保留数据结构不删除
@@ -692,7 +693,8 @@ class DailyReportProcessor:
             ws.column_dimensions[get_column_letter(c)].hidden = True
             ws.column_dimensions[get_column_letter(c)].width = 8
 
-        # ===== 第1行：标题 =====
+        # ===== 第1行：标题（合并 A1:L1 并居中） =====
+        ws.merge_cells("A1:L1")
         ws["A1"] = f"{self.current_year}年{self.current_month}月非油品基础品类销售进度表"
         ws["A1"].font = f_title
         ws["A1"].alignment = align_center
@@ -785,13 +787,15 @@ class DailyReportProcessor:
                 ws.cell(row=r, column=c).border = border
 
         # ===== 数据行（R7合计 + R8-12五个县区） =====
-        regions = ["合计", "淇县", "浚县", "市区经营部", "鹤壁", "商客"]
+        # 通报不显示鹤壁行（新源站数据在附表中体现）
+        regions = ["合计", "淇县", "浚县", "市区经营部", "商客"]
         # 当月对应的累月列
         m = self.current_month
         tgt_col = 28 + (m - 1)        # 基础品类目标月列
         sales_col = 39 + (m - 1)      # 基础品类销售月列
         ptgt_col = 53 + (m - 1)       # 毛利目标月列
         psales_col = 64 + (m - 1)     # 毛利销售月列
+        DATA_FIRST, DATA_LAST = 8, 11  # 县区数据行范围（R8-R11）
 
         for i, region in enumerate(regions):
             r = 7 + i
@@ -805,10 +809,10 @@ class DailyReportProcessor:
             ws.cell(row=r, column=26, value=region)  # Z 单位(累月)
 
             if is_total:
-                # 合计行公式
+                # 合计行公式（数据行 R8-R11）
                 for c in [3, 4, 5, 7, 8, 9, 11, 12, 15, 16, 17, tgt_col, 38, sales_col, 51,
                           ptgt_col, 63, psales_col, 76]:
-                    ws.cell(row=r, column=c, value=f"=SUM({get_column_letter(c)}8:{get_column_letter(c)}12)")
+                    ws.cell(row=r, column=c, value=f"=SUM({get_column_letter(c)}{DATA_FIRST}:{get_column_letter(c)}{DATA_LAST})")
                 ws.cell(row=r, column=10, value="=IF(G7=0,0,I7/G7)")            # J 完成率
                 ws.cell(row=r, column=13, value="=IF(K7=0,0,L7/K7)")            # M 增幅
                 ws.cell(row=r, column=18, value="=IF(O7=0,0,Q7/O7)")            # R 毛利完成率
@@ -900,41 +904,67 @@ class DailyReportProcessor:
         return str(output_path)
 
     def output_image(self):
-        """输出美化后的通报图片（按原日报'通报'工作表格式）"""
+        """输出美化后的通报图片（与通报表可见区列结构一致，含同比/吨油/门零销售）"""
         logger.info("生成通报图片", step=10)
         from PIL import Image, ImageDraw, ImageFont
 
         if self.tongbao_data is None:
             return None
 
+        # ===== 数据准备：从 tongbao_data 取行数据（不含鹤壁行） =====
+        regions = ["合计", "淇县", "浚县", "市区经营部", "商客"]
+        data_regions = ["淇县", "浚县", "市区经营部", "商客"]
+
+        def get_row(region):
+            rd = self.tongbao_data[self.tongbao_data["单位"] == region]
+            return rd.iloc[0] if len(rd) > 0 else {}
+
+        # 合计行 = 各县区求和 + 比率计算
+        def build_total():
+            sums = {}
+            for key in ["日均吨油", "门零吨油销售额", "门零销售", "基础品类目标", "基础品类完成量含非非",
+                        "基础品类完成量剔除非非", "同期", "增减量", "毛利目标", "毛利完成量含非非",
+                        "毛利完成量剔除非非"]:
+                sums[key] = sum(safe_float(get_row(rg).get(key, 0)) for rg in data_regions)
+            g, h_, ii = sums["基础品类目标"], sums["基础品类完成量含非非"], sums["基础品类完成量剔除非非"]
+            o, p_, q = sums["毛利目标"], sums["毛利完成量含非非"], sums["毛利完成量剔除非非"]
+            k_ = sums["同期"]
+            sums["基础品类完成率"] = ii / g if g else 0
+            sums["增幅"] = (sums["增减量"] / k_) if k_ else None
+            sums["毛利完成率"] = q / o if o else 0
+            sums["毛利率"] = (p_ / h_) if h_ else 0
+            sums["综合完成率"] = (q / o * 0.5 + min(ii / g, 1.3) * 0.4) if (o and g) else 0
+            return sums
+
         # ===== 布局参数 =====
         margin = 60
-        title_h = 70
-        date_h = 40
-        header_h = 90           # 两行表头
-        row_h = 48
-        regions = ["合计", "淇县", "浚县", "市区经营部", "鹤壁", "商客"]
-        data_rows = len(regions)
-        table_h = header_h + data_rows * row_h
+        title_h = 64
+        date_h = 36
+        header_h = 96
+        row_h = 44
+        n_rows = len(regions)
+        total_row_h = n_rows * row_h
 
-        # 列定义: (标题, 宽度)  -- 与通报表对齐
+        # 列定义: (标题, 宽度) —— 与通报表可见区一致（省略重复的单位列）
         cols = [
-            ("序号", 50), ("单位", 110), ("门零吨油\n销售额(元)", 130),
-            ("目标\n计划", 90), ("完成量\n(含非非)", 100), ("完成量\n(剔除非非)", 100), ("完成率", 80),
-            ("目标\n计划", 90), ("完成量\n(含非非)", 100), ("完成量\n(剔除非非)", 100), ("完成率", 80), ("毛利率", 80),
-            ("排名", 60), ("综合\n排名", 90)
+            ("序号", 52), ("单位", 118), ("日均吨油\n销售(吨)", 108),
+            ("门零吨油\n销售额(元)", 118), ("门零销售\n(万元)", 100),
+            ("目标\n计划", 88), ("完成量\n(含非非)", 102), ("完成量\n(剔除非非)", 102), ("完成率", 78),
+            ("同期", 88), ("增/减量", 92), ("增幅", 78),
+            ("目标\n计划", 88), ("完成量\n(含非非)", 102), ("完成量\n(剔除非非)", 102), ("完成率", 78), ("毛利率", 78),
+            ("名次", 58), ("综合\n完成率", 92)
         ]
         total_w = sum(w for _, w in cols) + margin * 2
-        total_h = margin + title_h + date_h + header_h + data_rows * row_h + margin
+        total_h = margin + title_h + date_h + header_h + total_row_h + margin
 
         img = Image.new("RGB", (total_w, total_h), "#FFFFFF")
         draw = ImageDraw.Draw(img)
 
         # 字体
         try:
-            font_title = ImageFont.truetype("C:/Windows/Fonts/msyhbd.ttc", 28)
-            font_date = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 16)
-            font_header = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 14)
+            font_title = ImageFont.truetype("C:/Windows/Fonts/msyhbd.ttc", 30)
+            font_date = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 15)
+            font_header = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 13)
             font_data = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 15)
             font_bold = ImageFont.truetype("C:/Windows/Fonts/msyhbd.ttc", 15)
         except Exception:
@@ -952,6 +982,12 @@ class DailyReportProcessor:
         c_border = "#BFBFBF"
         c_rate_good = "#386A20"
         c_rate_bad = "#B3261E"
+
+        def fmt_num(v, d=4):
+            return f"{safe_float(v):.{d}f}" if v is not None else "-"
+
+        def fmt_pct(v):
+            return f"{safe_float(v) * 100:.2f}%" if v is not None else "-"
 
         y = margin
 
@@ -971,92 +1007,104 @@ class DailyReportProcessor:
         y += date_h
 
         # 表头第1行（分组）
-        x = margin
+        # 列索引: 0序号 1单位 2日均吨油 3门零吨油销售额 4门零销售 5-8基础品类 9-11同比 12-16毛利 17名次 18综合完成率
         group_spans = [
-            (0, 2, ""),          # 序号+单位（无分组标题）
-            (2, 3, "门零吨油销售额\n(剔除烟草、洗车含非非)元"),
-            (3, 7, "基础品类（权重40%）"),
-            (7, 12, "毛利（权重50%）"),
-            (12, 13, "排名"),
-            (13, 14, "综合排名"),
+            (0, 2, ""),                                  # 序号+单位
+            (2, 5, "门零情况"),                           # 日均吨油/门零吨油销售额/门零销售
+            (5, 9, "基础品类（权重40%）"),
+            (9, 12, "同比"),
+            (12, 17, "毛利（权重50%）"),
+            (17, 18, "综合排名"),                         # 名次
+            (18, 19, ""),                                 # 综合完成率
         ]
+        x = margin
         for start, end, label in group_spans:
             w = sum(cols[j][1] for j in range(start, end))
             draw.rectangle([x, y, x + w, y + header_h // 2], fill=c_header_bg, outline=c_white)
             if label:
-                lines = label.split("\n")
-                for li, ln in enumerate(lines):
-                    lw = draw.textlength(ln, font=font_header)
-                    draw.text((x + (w - lw) / 2, y + 10 + li * 18), ln, fill=c_white, font=font_header)
+                lw = draw.textlength(label, font=font_header)
+                draw.text((x + (w - lw) / 2, y + 14), label, fill=c_white, font=font_header)
             x += w
 
         # 表头第2行（子列名）
         x = margin
-        sub_names = ["序号", "单位", "门零吨油", "目标计划", "完成量(含非非)", "完成量(剔除非非)", "完成率",
-                     "目标计划", "完成量(含非非)", "完成量(剔除非非)", "完成率", "毛利率", "排名", "综合排名"]
-        for i, (name, w) in enumerate(cols):
+        for name, w in cols:
             draw.rectangle([x, y + header_h // 2, x + w, y + header_h], fill=c_sub_bg, outline=c_white)
-            label = sub_names[i] if i < len(sub_names) else name
-            lines = label.split("\n") if "\n" in label else [label]
+            lines = name.split("\n")
+            start_off = y + header_h // 2 + (6 if len(lines) == 1 else 3)
             for li, ln in enumerate(lines):
                 lw = draw.textlength(ln, font=font_header)
-                draw.text((x + (w - lw) / 2, y + header_h // 2 + 6 + li * 16), ln, fill=c_white, font=font_header)
+                draw.text((x + (w - lw) / 2, start_off + li * 15), ln, fill=c_white, font=font_header)
             x += w
         y += header_h
 
         # 数据行
+        total_row = build_total()
         for i, region in enumerate(regions):
             x = margin
             bg = c_total_bg if i == 0 else (c_alt_bg if i % 2 == 0 else "#FFFFFF")
             font_use = font_bold if i == 0 else font_data
-
-            # 取数据
             if i == 0:
-                vals = ["-", "合计", "", "", "", "", "", "", "", "", "", "", "", ""]
+                d = total_row
             else:
-                row_data = self.tongbao_data[self.tongbao_data["单位"] == region]
-                d = row_data.iloc[0] if len(row_data) > 0 else {}
-                sales_rate = safe_float(d.get("基础品类完成率", 0))
-                profit_rate = safe_float(d.get("毛利完成率", 0))
-                comp_rate = safe_float(d.get("综合完成率", 0))
-                ml = safe_float(d.get("毛利完成量含非非", 0))
-                xs = safe_float(d.get("基础品类完成量含非非", 0))
-                maoli = ml / xs if xs else 0
-                # 排名：仅考核县区（淇县/浚县/市区经营部），其余留空
-                ranked_regions = ["淇县", "浚县", "市区经营部"]
-                if self.tongbao_data is not None and len(self.tongbao_data) > 0:
-                    ranked = self.tongbao_data[self.tongbao_data["单位"].isin(ranked_regions)].sort_values("综合完成率", ascending=False)
-                    rank_map = {row["单位"]: rk for rk, (_, row) in enumerate(ranked.iterrows(), 1)}
-                else:
-                    rank_map = {}
-                rank_val = str(rank_map.get(region, "")) if region in ranked_regions else ""
-                vals = [
-                    str(i), region, "",
-                    f"{safe_float(d.get('基础品类目标', 0)):.2f}",
-                    f"{safe_float(d.get('基础品类完成量含非非', 0)):.4f}",
-                    f"{safe_float(d.get('基础品类完成量剔除非非', 0)):.4f}",
-                    f"{sales_rate * 100:.2f}%",
-                    f"{safe_float(d.get('毛利目标', 0)):.2f}",
-                    f"{safe_float(d.get('毛利完成量含非非', 0)):.4f}",
-                    f"{safe_float(d.get('毛利完成量剔除非非', 0)):.4f}",
-                    f"{profit_rate * 100:.2f}%",
-                    f"{maoli * 100:.2f}%",
-                    rank_val, f"{comp_rate * 100:.2f}%"
-                ]
+                rd = get_row(region)
+                d = {}
+                for key in ["日均吨油", "门零吨油销售额", "门零销售", "基础品类目标", "基础品类完成量含非非",
+                            "基础品类完成量剔除非非", "基础品类完成率", "同期", "增减量", "增幅",
+                            "毛利目标", "毛利完成量含非非", "毛利完成量剔除非非", "毛利完成率", "毛利率",
+                            "名次", "综合完成率"]:
+                    try:
+                        d[key] = rd.get(key, 0)
+                    except Exception:
+                        d[key] = 0
+
+            rank_val = ""
+            if i > 0 and region in ["淇县", "浚县", "市区经营部"]:
+                rk = d.get("名次")
+                if rk is not None:
+                    try:
+                        rank_val = str(int(float(rk)))
+                    except Exception:
+                        rank_val = ""
+
+            vals = [
+                ("-" if i == 0 else str(i)), region,
+                fmt_num(d.get("日均吨油"), 2),
+                fmt_num(d.get("门零吨油销售额"), 2),
+                fmt_num(d.get("门零销售")),
+                fmt_num(d.get("基础品类目标"), 2),
+                fmt_num(d.get("基础品类完成量含非非")),
+                fmt_num(d.get("基础品类完成量剔除非非")),
+                fmt_pct(d.get("基础品类完成率")),
+                fmt_num(d.get("同期")),
+                fmt_num(d.get("增减量")),
+                fmt_pct(d.get("增幅")),
+                fmt_num(d.get("毛利目标"), 2),
+                fmt_num(d.get("毛利完成量含非非")),
+                fmt_num(d.get("毛利完成量剔除非非")),
+                fmt_pct(d.get("毛利完成率")),
+                fmt_pct(d.get("毛利率")),
+                rank_val,
+                fmt_pct(d.get("综合完成率")),
+            ]
 
             for j, (name, w) in enumerate(cols):
                 draw.rectangle([x, y, x + w, y + row_h], fill=bg, outline=c_border)
                 v = vals[j] if j < len(vals) else ""
-                # 完成率/毛利率/综合排名用颜色标注
                 color = c_text
-                if j in (6, 10, 11, 13) and i > 0:
+                # 完成率/增幅/毛利率/综合完成率用颜色标注
+                if j in (8, 11, 15, 16, 18) and i > 0:
                     try:
-                        pct = float(v.replace("%", ""))
-                        color = c_rate_good if pct >= 50 else c_rate_bad
+                        s = str(v)
+                        if j == 11 and s.startswith("-"):
+                            color = c_rate_bad
+                        else:
+                            pct = float(s.replace("%", "").replace("-", ""))
+                            color = c_rate_good if pct >= 50 else c_rate_bad
                     except Exception:
                         pass
                 vw = draw.textlength(str(v), font=font_use)
-                draw.text((x + (w - vw) / 2, y + 14), str(v), fill=color, font=font_use)
+                draw.text((x + (w - vw) / 2, y + 12), str(v), fill=color, font=font_use)
                 x += w
             y += row_h
 
