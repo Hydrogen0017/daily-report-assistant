@@ -282,32 +282,76 @@ def process_status():
 # ===== API: 非油日报 - 预览数据 =====
 @app.route("/api/daily-report/preview")
 def preview_data():
-    """获取预览数据（附表+通报摘要）"""
+    """获取预览数据，返回结构化通报数据供前端按原日报格式渲染"""
     session_id = request.args.get("session_id")
-    # 从最近输出读取
     outputs = sorted(OUTPUT_DIR.glob("每日通报*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not outputs:
         return jsonify({"status": "error", "message": "暂无输出文件"})
 
     import openpyxl
     wb = openpyxl.load_workbook(outputs[0], data_only=True)
+
+    # 读取通报表，解析为结构化数据
+    tongbao_rows = []
+    if "通报" in wb.sheetnames:
+        ws = wb["通报"]
+        # 第5行起是数据行（合计+4县区），列: A序号 B县区 C站点 D门零 E目标 F含 G剔 H完成率 I毛利目标 J含 K剔 L完成率 M毛利率 N排名 O综合
+        raw_rows = []
+        for row in ws.iter_rows(min_row=5, max_row=9, values_only=True):
+            raw_rows.append(list(row))
+
+        for i, vals in enumerate(raw_rows):
+            if len(vals) >= 15:
+                # 合计行是公式（=SUM(...)），data_only 读取为 None，需要手动计算
+                if i == 0:
+                    # 数值列直接求和；完成率列除外（用合计值重新计算）
+                    rate_cols = {7, 11, 12, 14}  # 完成率/完成率/毛利率/综合
+                    for c in range(3, 15):
+                        if c in rate_cols:
+                            continue
+                        if vals[c] is None:
+                            col_sum = 0
+                            for j in range(1, 5):
+                                v = raw_rows[j][c] if c < len(raw_rows[j]) else 0
+                                col_sum += v if isinstance(v, (int, float)) else 0
+                            vals[c] = col_sum
+                    # 完成率 = 合计完成量 / 合计目标
+                    vals[7] = (vals[5] / vals[4]) if (vals[4] is not None and vals[4] != 0) else 0
+                    vals[11] = (vals[9] / vals[8]) if (vals[8] is not None and vals[8] != 0) else 0
+                    vals[12] = (vals[9] / vals[5]) if (vals[5] is not None and vals[5] != 0) else 0
+                    # 综合完成率 = 毛利完成率×50% + 基础品类完成率×40%(封顶130%) + 累月×10%
+                    vals[14] = (vals[11] or 0) * 0.5 + min(vals[7] or 0, 1.3) * 0.4
+                    vals[14] = round(vals[14], 4) if vals[14] else 0
+
+                tongbao_rows.append({
+                    "序号": vals[0], "单位": vals[1], "站点": vals[2],
+                    "门零吨油": vals[3],
+                    "基础品类目标": vals[4], "基础品类完成含非非": vals[5],
+                    "基础品类完成剔除非非": vals[6], "基础品类完成率": vals[7],
+                    "毛利目标": vals[8], "毛利完成含非非": vals[9],
+                    "毛利完成剔除非非": vals[10], "毛利完成率": vals[11],
+                    "毛利率": vals[12], "排名": vals[13], "综合完成率": vals[14]
+                })
+
+    # 附表数据（前20行摘要）
     fuhe_data = []
     if "附表" in wb.sheetnames:
         ws = wb["附表"]
-        for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 50), values_only=True):
+        for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 20), values_only=True):
             fuhe_data.append(list(row))
 
-    tongbao_data = []
-    if "通报" in wb.sheetnames:
-        ws = wb["通报"]
-        for row in ws.iter_rows(values_only=True):
-            tongbao_data.append(list(row))
+    # 通报图片路径
+    img_path = OUTPUT_DIR / f"每日通报{get_today_str()}.png"
+    # 找最新的 png
+    pngs = sorted(OUTPUT_DIR.glob("每日通报*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
 
     return jsonify({
         "status": "success",
         "file": str(outputs[0]),
+        "tongbao_rows": tongbao_rows,
         "fuhe": fuhe_data,
-        "tongbao": tongbao_data
+        "report_date": get_today_str(),
+        "image_url": f"/api/download/{pngs[0].name}" if pngs else None
     })
 
 
@@ -318,6 +362,32 @@ def download_file(filename):
     if file_path.exists():
         return send_file(str(file_path), as_attachment=True)
     return jsonify({"status": "error", "message": "文件不存在"}), 404
+
+
+# ===== API: 预览图片（非 attachment，直接显示） =====
+@app.route("/api/serve/<path:filename>")
+def serve_file(filename):
+    file_path = OUTPUT_DIR / filename
+    if file_path.exists():
+        return send_file(str(file_path), as_attachment=False)
+    return jsonify({"status": "error", "message": "文件不存在"}), 404
+
+
+# ===== API: 用系统默认程序打开文件 =====
+@app.route("/api/open/<path:filename>", methods=["POST"])
+def open_file(filename):
+    import subprocess, platform
+    file_path = OUTPUT_DIR / filename
+    if not file_path.exists():
+        return jsonify({"status": "error", "message": "文件不存在"}), 404
+    try:
+        if platform.system() == "Windows":
+            os.startfile(str(file_path))
+        else:
+            subprocess.call(["open" if platform.system() == "Darwin" else "xdg-open", str(file_path)])
+        return jsonify({"status": "success", "message": "已打开"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 # ===== API: 列出输出文件 =====

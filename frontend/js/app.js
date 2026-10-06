@@ -631,22 +631,91 @@ function renderOutput(container) {
 
 async function loadPreview() {
     document.getElementById('previewCard').style.display = '';
+    const content = document.getElementById('previewContent');
+    content.innerHTML = '<p style="color:var(--md-on-surface-variant); padding:16px;">正在加载预览...</p>';
     try {
         const result = await api('/api/daily-report/preview');
-        const content = document.getElementById('previewContent');
         if (result.status === 'success') {
-            const tongbao = result.tongbao || [];
-            let html = '<div style="overflow:auto;"><table class="data-table"><thead><tr>';
-            if (tongbao[0]) tongbao[0].forEach(h => html += `<th>${h || ''}</th>`);
-            html += '</tr></thead><tbody>';
-            tongbao.slice(1).forEach(row => { html += '<tr>'; row.forEach(c => html += `<td>${c !== null ? c : ''}</td>`); html += '</tr>'; });
-            html += '</tbody></table></div>';
+            const rows = result.tongbao_rows || [];
+            const reportDate = result.report_date || '';
+
+            // 按原日报"通报"工作表格式渲染
+            const regions = ['合计', '淇县', '浚县', '市区经营部', '商客'];
+            const fmtPct = v => (v !== null && v !== undefined && !isNaN(v)) ? (v * 100).toFixed(2) + '%' : '-';
+            const fmtNum = (v, d=4) => (v !== null && v !== undefined && !isNaN(v)) ? Number(v).toFixed(d) : '-';
+
+            let html = `
+                <div style="text-align:center; margin-bottom:16px;">
+                    <h3 style="font-size:18px; font-weight:600;">${new Date().getFullYear()}年${new Date().getMonth()+1}月非油品基础品类销售进度表</h3>
+                    <p style="font-size:13px; color:var(--md-on-surface-variant);">报表日期：${reportDate}　单位：万元</p>
+                </div>
+                <div style="overflow:auto; border:1px solid var(--md-outline-variant); border-radius:var(--shape-sm);">
+                    <table class="data-table" style="font-size:12px; text-align:center; border-collapse:collapse;">
+                        <thead>
+                            <tr style="background:#4472C4; color:#fff;">
+                                <th rowspan="2" style="border:1px solid #fff; padding:8px 6px;">序号</th>
+                                <th colspan="2" style="border:1px solid #fff; padding:8px 6px;">单位</th>
+                                <th rowspan="2" style="border:1px solid #fff; padding:8px 6px;">门零吨油销售额<br>(剔除烟草、洗车含非非)元</th>
+                                <th colspan="4" style="border:1px solid #fff; padding:8px 6px;">基础品类（权重40%）</th>
+                                <th colspan="5" style="border:1px solid #fff; padding:8px 6px;">毛利（权重50%）</th>
+                                <th rowspan="2" style="border:1px solid #fff; padding:8px 6px;">排名</th>
+                                <th rowspan="2" style="border:1px solid #fff; padding:8px 6px;">综合排名</th>
+                            </tr>
+                            <tr style="background:#8EAADB; color:#fff;">
+                                <th style="border:1px solid #fff; padding:6px;">县区</th>
+                                <th style="border:1px solid #fff; padding:6px;">站点</th>
+                                <th style="border:1px solid #fff; padding:6px;">目标计划</th>
+                                <th style="border:1px solid #fff; padding:6px;">完成量(含非非)</th>
+                                <th style="border:1px solid #fff; padding:6px;">完成量(剔除非非)</th>
+                                <th style="border:1px solid #fff; padding:6px;">完成率</th>
+                                <th style="border:1px solid #fff; padding:6px;">目标计划</th>
+                                <th style="border:1px solid #fff; padding:6px;">完成量(含非非)</th>
+                                <th style="border:1px solid #fff; padding:6px;">完成量(剔除非非)</th>
+                                <th style="border:1px solid #fff; padding:6px;">完成率</th>
+                                <th style="border:1px solid #fff; padding:6px;">毛利率</th>
+                            </tr>
+                        </thead>
+                        <tbody>`;
+
+            rows.forEach((d, i) => {
+                const isTotal = (d['单位'] === '合计' || i === 0);
+                const bg = isTotal ? '#D6DCE4' : (i % 2 === 0 ? '#F2F2F2' : '#FFFFFF');
+                const fw = isTotal ? 'font-weight:600;' : '';
+                html += `<tr style="background:${bg}; ${fw}">`;
+                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${d['序号'] ?? '-'}</td>`;
+                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${d['单位'] ?? ''}</td>`;
+                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${d['站点'] ?? ''}</td>`;
+                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtNum(d['门零吨油'], 2)}</td>`;
+                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtNum(d['基础品类目标'], 2)}</td>`;
+                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtNum(d['基础品类完成含非非'])}</td>`;
+                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtNum(d['基础品类完成剔除非非'])}</td>`;
+                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtPct(d['基础品类完成率'])}</td>`;
+                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtNum(d['毛利目标'], 2)}</td>`;
+                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtNum(d['毛利完成含非非'])}</td>`;
+                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtNum(d['毛利完成剔除非非'])}</td>`;
+                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtPct(d['毛利完成率'])}</td>`;
+                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtPct(d['毛利率'])}</td>`;
+                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${d['排名'] ?? '-'}</td>`;
+                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtPct(d['综合完成率'])}</td>`;
+                html += `</tr>`;
+            });
+
+            html += `</tbody></table></div>`;
+
+            // 图片预览
+            if (result.image_url) {
+                html += `<div style="margin-top:24px; text-align:center;">
+                    <h4 style="font-size:15px; font-weight:600; margin-bottom:12px;">通报图片</h4>
+                    <img src="${result.image_url}" style="max-width:100%; border:1px solid var(--md-outline-variant); border-radius:var(--shape-md);" />
+                </div>`;
+            }
+
             content.innerHTML = html;
         } else {
-            content.innerHTML = `<p style="color:var(--md-on-surface-variant);">${result.message}</p>`;
+            content.innerHTML = `<p style="color:var(--md-on-surface-variant); padding:16px;">${result.message}</p>`;
         }
     } catch (e) {
-        document.getElementById('previewContent').innerHTML = `<p style="color:var(--md-error);">加载预览失败: ${e.message}</p>`;
+        document.getElementById('previewContent').innerHTML = `<p style="color:var(--md-error); padding:16px;">加载预览失败: ${e.message}</p>`;
     }
 }
 
@@ -667,12 +736,49 @@ async function loadOutputs() {
                     <div class="file-list-name">${f.name}</div>
                     <div class="file-list-meta">${(f.size/1024).toFixed(1)} KB · ${new Date(f.time).toLocaleString()}</div>
                 </div>
-                <a class="btn btn-tonal" href="/api/download/${encodeURIComponent(f.name)}" download>${ICONS.download} 下载</a>
+                <button class="btn btn-tonal" onclick="openOutput('${encodeURIComponent(f.name)}')">${ICONS.visibility} 打开</button>
+                <button class="btn btn-outlined" onclick="downloadOutput('${encodeURIComponent(f.name)}')">${ICONS.download} 下载</button>
             </div>
         `).join('');
     } catch (e) {
         const content = document.getElementById('outputList');
         if (content) content.innerHTML = `<p>加载失败: ${e.message}</p>`;
+    }
+}
+
+async function downloadOutput(filename) {
+    // pywebview 中 <a download> 不生效，用 fetch + blob 方式下载
+    try {
+        const resp = await fetch(`/api/download/${filename}`);
+        if (!resp.ok) { showSnackbar('下载失败', 'error'); return; }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = decodeURIComponent(filename);
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        showSnackbar('下载已开始', 'success');
+    } catch (e) {
+        // fallback: 调用后端用系统默认方式打开
+        try {
+            await apiPost(`/api/open/${filename}`, {});
+            showSnackbar('已用系统程序打开', 'success');
+        } catch (e2) {
+            showSnackbar('下载失败: ' + e2.message, 'error');
+        }
+    }
+}
+
+async function openOutput(filename) {
+    // 用系统默认程序直接打开文件
+    try {
+        await apiPost(`/api/open/${filename}`, {});
+        showSnackbar('已打开文件', 'success');
+    } catch (e) {
+        showSnackbar('打开失败: ' + e.message, 'error');
     }
 }
 

@@ -596,37 +596,174 @@ class DailyReportProcessor:
         }
 
     def output_xlsx(self, template_path=None):
-        """输出原样xlsx文件（保持原报表版式）"""
+        """输出xlsx文件，'通报'表按原日报格式排版"""
         logger.info("输出xlsx文件", step=10)
         import openpyxl
-        from openpyxl.utils.dataframe import dataframe_to_rows
+        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side, numbers
+        from openpyxl.utils import get_column_letter
 
-        if template_path and Path(template_path).exists():
-            # 基于模板（前一日通报）输出
-            wb = openpyxl.load_workbook(template_path)
-        else:
-            # 新建工作簿
-            wb = openpyxl.Workbook()
+        wb = openpyxl.Workbook()
 
-        # 写入附表数据到"附表"工作表
-        if self.fuhe is not None:
-            if "附表" in wb.sheetnames:
-                ws = wb["附表"]
+        # ===== 通报表（按原日报格式） =====
+        ws = wb.active
+        ws.title = "通报"
+
+        # 样式定义
+        f_title = Font(name="微软雅黑", size=14, bold=True)
+        f_header = Font(name="微软雅黑", size=10, bold=True, color="FFFFFF")
+        f_data = Font(name="微软雅黑", size=10)
+        f_bold = Font(name="微软雅黑", size=10, bold=True)
+        fill_header = PatternFill("solid", fgColor="4472C4")
+        fill_subheader = PatternFill("solid", fgColor="8EAADB")
+        fill_total = PatternFill("solid", fgColor="D6DCE4")
+        fill_alt = PatternFill("solid", fgColor="F2F2F2")
+        thin = Side(style="thin", color="BFBFBF")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        align_left = Alignment(horizontal="left", vertical="center")
+
+        # 列宽
+        col_widths = {1: 6, 2: 12, 3: 12, 4: 14, 5: 12, 6: 14, 7: 14, 8: 10,
+                      9: 12, 10: 14, 11: 14, 12: 10, 13: 10, 14: 10, 15: 12}
+        for c, w in col_widths.items():
+            ws.column_dimensions[get_column_letter(c)].width = w
+
+        # 第1行：标题
+        ws.merge_cells("A1:O1")
+        ws["A1"] = f"{self.current_year}年{self.current_month}月非油品基础品类销售进度表"
+        ws["A1"].font = f_title
+        ws["A1"].alignment = align_center
+        ws.row_dimensions[1].height = 36
+
+        # 第2行：日期
+        ws.merge_cells("A2:E2")
+        ws["A2"] = f"报表日期：{self.current_year}年{self.current_month}月1-{self.today_day}日"
+        ws["A2"].font = f_data
+        ws["A2"].alignment = align_left
+        ws.merge_cells("F2:G2")
+        ws["F2"] = "月时间进度："
+        ws["F2"].font = f_data
+        ws["F2"].alignment = Alignment(horizontal="right", vertical="center")
+        ws["H2"] = round(self.today_day / self.days_in_month, 4)
+        ws["H2"].font = f_data
+        ws["H2"].number_format = "0.00%"
+        ws["H2"].alignment = align_center
+        ws.merge_cells("N2:O2")
+        ws["N2"] = "单位：万元"
+        ws["N2"].font = f_data
+        ws["N2"].alignment = Alignment(horizontal="right", vertical="center")
+
+        # 第3行：主表头
+        headers3 = {
+            1: "序号", 2: "单位", 4: "门零吨油销售额\n(剔除烟草、洗车含非非)元",
+            5: "基础品类（权重40%）", 9: "毛利（权重50%）", 13: "排名", 14: "综合排名"
+        }
+        for c, v in headers3.items():
+            cell = ws.cell(row=3, column=c, value=v)
+            cell.font = f_header
+            cell.fill = fill_header
+            cell.alignment = align_center
+            cell.border = border
+        # 合并第3行单元格
+        ws.merge_cells("B3:C3")    # 单位
+        ws.merge_cells("E3:H3")    # 基础品类
+        ws.merge_cells("I3:M3")    # 毛利
+        ws.merge_cells("N3:N4")    # 排名
+        ws.merge_cells("O3:O4")    # 综合排名
+        ws.merge_cells("A3:A4")    # 序号
+        ws.merge_cells("D3:D4")    # 门零吨油
+        ws.row_dimensions[3].height = 30
+
+        # 第4行：子表头
+        subheaders = {5: "目标计划", 6: "完成量\n(含非非)", 7: "完成量\n(剔除非非)", 8: "完成率",
+                      9: "目标计划", 10: "完成量\n(含非非)", 11: "完成量\n(剔除非非)", 12: "完成率", 13: "毛利率"}
+        for c, v in subheaders.items():
+            cell = ws.cell(row=4, column=c, value=v)
+            cell.font = f_header
+            cell.fill = fill_subheader
+            cell.alignment = align_center
+            cell.border = border
+        # 补充B4/C4（单位的子行）
+        ws.cell(row=4, column=2, value="县区").font = f_header
+        ws.cell(row=4, column=2).fill = fill_subheader
+        ws.cell(row=4, column=2).alignment = align_center
+        ws.cell(row=4, column=2).border = border
+        ws.cell(row=4, column=3, value="站点").font = f_header
+        ws.cell(row=4, column=3).fill = fill_subheader
+        ws.cell(row=4, column=3).alignment = align_center
+        ws.cell(row=4, column=3).border = border
+        ws.row_dimensions[4].height = 30
+
+        # 给所有表头加边框
+        for r in [3, 4]:
+            for c in range(1, 16):
+                ws.cell(row=r, column=c).border = border
+
+        # 第5行：合计
+        regions = ["合计", "淇县", "浚县", "市区经营部", "商客"]
+        for i, region in enumerate(regions):
+            r = 5 + i
+            ws.cell(row=r, column=1, value=("-" if i == 0 else i)).font = f_bold
+            ws.cell(row=r, column=2, value=region).font = f_bold if i == 0 else f_data
+            ws.cell(row=r, column=3, value="合计" if i == 0 else "").font = f_bold if i == 0 else f_data
+
+            # 填充数据
+            if i == 0:
+                # 合计行 = 各县区之和
+                for c in range(4, 16):
+                    col_letter = get_column_letter(c)
+                    ws.cell(row=r, column=c, value=f"=SUM({col_letter}6:{col_letter}9)")
+                ws.cell(row=r, column=1).value = "-"
             else:
-                ws = wb.create_sheet("附表")
+                # 各县区数据
+                row_data = self.tongbao_data[self.tongbao_data["单位"] == region]
+                if len(row_data) > 0:
+                    d = row_data.iloc[0]
+                    ws.cell(row=r, column=5, value=round(safe_float(d.get("基础品类目标", 0)), 2))
+                    ws.cell(row=r, column=6, value=round(safe_float(d.get("基础品类完成量含非非", 0)), 4))
+                    ws.cell(row=r, column=7, value=round(safe_float(d.get("基础品类完成量剔除非非", 0)), 4))
+                    rate = safe_float(d.get("基础品类完成率", 0))
+                    ws.cell(row=r, column=8, value=round(rate, 4))
+                    ws.cell(row=r, column=8).number_format = "0.00%"
+                    ws.cell(row=r, column=9, value=round(safe_float(d.get("毛利目标", 0)), 2))
+                    ws.cell(row=r, column=10, value=round(safe_float(d.get("毛利完成量含非非", 0)), 4))
+                    ws.cell(row=r, column=11, value=round(safe_float(d.get("毛利完成量剔除非非", 0)), 4))
+                    prate = safe_float(d.get("毛利完成率", 0))
+                    ws.cell(row=r, column=12, value=round(prate, 4))
+                    ws.cell(row=r, column=12).number_format = "0.00%"
+                    # 毛利率 = 毛利完成量 / 基础品类完成量
+                    ml = safe_float(d.get("毛利完成量含非非", 0))
+                    xs = safe_float(d.get("基础品类完成量含非非", 0))
+                    ws.cell(row=r, column=13, value=round(ml / xs, 4) if xs else 0)
+                    ws.cell(row=r, column=13).number_format = "0.00%"
+                    # 综合完成率
+                    comp = safe_float(d.get("综合完成率", 0))
+                    ws.cell(row=r, column=15, value=round(comp, 4))
+                    ws.cell(row=r, column=15).number_format = "0.00%"
+                    # 排名
+                    ws.cell(row=r, column=14, value=i)
+
+            # 格式化
+            for c in range(1, 16):
+                cell = ws.cell(row=r, column=c)
+                cell.border = border
+                cell.alignment = align_center
+                if i == 0:
+                    cell.font = f_bold
+                    cell.fill = fill_total
+                elif i % 2 == 0:
+                    cell.fill = fill_alt
+                if c in (8, 12, 13, 15) and i > 0:
+                    cell.number_format = "0.00%"
+            ws.row_dimensions[r].height = 24
+
+        # ===== 附表 =====
+        if self.fuhe is not None:
+            ws2 = wb.create_sheet("附表")
+            from openpyxl.utils.dataframe import dataframe_to_rows
             for r_idx, row in enumerate(dataframe_to_rows(self.fuhe, index=False, header=True), 1):
                 for c_idx, val in enumerate(row, 1):
-                    ws.cell(row=r_idx, column=c_idx, value=val)
-
-        # 写入通报数据
-        if self.tongbao_data is not None:
-            if "通报" in wb.sheetnames:
-                ws = wb["通报"]
-            else:
-                ws = wb.create_sheet("通报")
-            for r_idx, row in enumerate(dataframe_to_rows(self.tongbao_data, index=False, header=True), 1):
-                for c_idx, val in enumerate(row, 1):
-                    ws.cell(row=r_idx, column=c_idx, value=val)
+                    ws2.cell(row=r_idx, column=c_idx, value=val)
 
         output_path = OUTPUT_DIR / f"每日通报{self.report_date}.xlsx"
         wb.save(output_path)
@@ -634,67 +771,157 @@ class DailyReportProcessor:
         return str(output_path)
 
     def output_image(self):
-        """输出美化后的通报图片（按通报工作表格式）"""
+        """输出美化后的通报图片（按原日报'通报'工作表格式）"""
         logger.info("生成通报图片", step=10)
         from PIL import Image, ImageDraw, ImageFont
 
         if self.tongbao_data is None:
             return None
 
-        # 图片尺寸
-        width, height = 2400, 1600
-        img = Image.new("RGB", (width, height), "#FFFFFF")
+        # ===== 布局参数 =====
+        margin = 60
+        title_h = 70
+        date_h = 40
+        header_h = 90           # 两行表头
+        row_h = 48
+        regions = ["合计", "淇县", "浚县", "市区经营部", "商客"]
+        data_rows = len(regions)
+        table_h = header_h + data_rows * row_h
+
+        # 列定义: (标题, 宽度)  -- 与通报表对齐
+        cols = [
+            ("序号", 50), ("单位", 110), ("门零吨油\n销售额(元)", 130),
+            ("目标\n计划", 90), ("完成量\n(含非非)", 100), ("完成量\n(剔除非非)", 100), ("完成率", 80),
+            ("目标\n计划", 90), ("完成量\n(含非非)", 100), ("完成量\n(剔除非非)", 100), ("完成率", 80), ("毛利率", 80),
+            ("排名", 60), ("综合\n排名", 90)
+        ]
+        total_w = sum(w for _, w in cols) + margin * 2
+        total_h = margin + title_h + date_h + header_h + data_rows * row_h + margin
+
+        img = Image.new("RGB", (total_w, total_h), "#FFFFFF")
         draw = ImageDraw.Draw(img)
 
-        # 尝试加载字体
+        # 字体
         try:
-            font_title = ImageFont.truetype("C:/Windows/Fonts/msyhbd.ttc", 48)
-            font_header = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 32)
-            font_data = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 28)
+            font_title = ImageFont.truetype("C:/Windows/Fonts/msyhbd.ttc", 28)
+            font_date = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 16)
+            font_header = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 14)
+            font_data = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 15)
+            font_bold = ImageFont.truetype("C:/Windows/Fonts/msyhbd.ttc", 15)
         except Exception:
             font_title = ImageFont.load_default()
-            font_header = ImageFont.load_default()
-            font_data = ImageFont.load_default()
+            font_date = font_header = font_data = font_bold = ImageFont.load_default()
+
+        # 颜色
+        c_title = "#1F1F1F"
+        c_header_bg = "#4472C4"
+        c_sub_bg = "#8EAADB"
+        c_total_bg = "#D6DCE4"
+        c_alt_bg = "#F2F2F2"
+        c_white = "#FFFFFF"
+        c_text = "#1F1F1F"
+        c_border = "#BFBFBF"
+        c_rate_good = "#386A20"
+        c_rate_bad = "#B3261E"
+
+        y = margin
 
         # 标题
         title = f"{self.current_year}年{self.current_month}月非油品基础品类销售进度表"
-        draw.text((width//2 - 400, 30), title, fill="#1A73E8", font=font_title)
+        bbox = draw.textbbox((0, 0), title, font=font_title)
+        tw = bbox[2] - bbox[0]
+        draw.text(((total_w - tw) / 2, y), title, fill=c_title, font=font_title)
+        y += title_h
+
+        # 日期行
         date_str = f"报表日期：{self.current_year}年{self.current_month}月1-{self.today_day}日"
-        draw.text((60, 100), date_str, fill="#5F6368", font=font_header)
+        draw.text((margin, y), date_str, fill="#5F6368", font=font_date)
+        progress = f"月时间进度：{self.today_day / self.days_in_month * 100:.1f}%    单位：万元"
+        pw = draw.textlength(progress, font=font_date)
+        draw.text((total_w - margin - pw, y), progress, fill="#5F6368", font=font_date)
+        y += date_h
 
-        # 表格
-        headers = ["单位", "基础品类目标", "完成量(含非非)", "完成量(剔除非非)", "完成率", "毛利目标", "毛利完成量", "毛利完成率", "综合完成率"]
-        col_widths = [200, 200, 200, 200, 150, 200, 200, 150, 150]
-        start_x, start_y = 60, 180
-        row_height = 60
+        # 表头第1行（分组）
+        x = margin
+        group_spans = [
+            (0, 2, ""),          # 序号+单位（无分组标题）
+            (2, 3, "门零吨油销售额\n(剔除烟草、洗车含非非)元"),
+            (3, 7, "基础品类（权重40%）"),
+            (7, 12, "毛利（权重50%）"),
+            (12, 13, "排名"),
+            (13, 14, "综合排名"),
+        ]
+        for start, end, label in group_spans:
+            w = sum(cols[j][1] for j in range(start, end))
+            draw.rectangle([x, y, x + w, y + header_h // 2], fill=c_header_bg, outline=c_white)
+            if label:
+                lines = label.split("\n")
+                for li, ln in enumerate(lines):
+                    lw = draw.textlength(ln, font=font_header)
+                    draw.text((x + (w - lw) / 2, y + 10 + li * 18), ln, fill=c_white, font=font_header)
+            x += w
 
-        # 表头
-        x = start_x
-        for i, h in enumerate(headers):
-            draw.rectangle([x, start_y, x + col_widths[i], start_y + row_height], fill="#1A73E8", outline="#FFFFFF")
-            draw.text((x + 10, start_y + 15), h, fill="#FFFFFF", font=font_header)
-            x += col_widths[i]
+        # 表头第2行（子列名）
+        x = margin
+        sub_names = ["序号", "单位", "门零吨油", "目标计划", "完成量(含非非)", "完成量(剔除非非)", "完成率",
+                     "目标计划", "完成量(含非非)", "完成量(剔除非非)", "完成率", "毛利率", "排名", "综合排名"]
+        for i, (name, w) in enumerate(cols):
+            draw.rectangle([x, y + header_h // 2, x + w, y + header_h], fill=c_sub_bg, outline=c_white)
+            label = sub_names[i] if i < len(sub_names) else name
+            lines = label.split("\n") if "\n" in label else [label]
+            for li, ln in enumerate(lines):
+                lw = draw.textlength(ln, font=font_header)
+                draw.text((x + (w - lw) / 2, y + header_h // 2 + 6 + li * 16), ln, fill=c_white, font=font_header)
+            x += w
+        y += header_h
 
         # 数据行
-        for r_idx, row in self.tongbao_data.iterrows():
-            y = start_y + (r_idx + 1) * row_height
-            x = start_x
-            bg = "#F8F9FA" if r_idx % 2 == 0 else "#FFFFFF"
-            values = [
-                row.get("单位", ""),
-                f"{row.get('基础品类目标', 0):.2f}",
-                f"{row.get('基础品类完成量含非非', 0):.4f}",
-                f"{row.get('基础品类完成量剔除非非', 0):.4f}",
-                f"{row.get('基础品类完成率', 0)*100:.2f}%",
-                f"{row.get('毛利目标', 0):.2f}",
-                f"{row.get('毛利完成量含非非', 0):.4f}",
-                f"{row.get('毛利完成率', 0)*100:.2f}%",
-                f"{row.get('综合完成率', 0)*100:.2f}%"
-            ]
-            for i, v in enumerate(values):
-                draw.rectangle([x, y, x + col_widths[i], y + row_height], fill=bg, outline="#DADCE0")
-                draw.text((x + 10, y + 15), str(v), fill="#202124", font=font_data)
-                x += col_widths[i]
+        for i, region in enumerate(regions):
+            x = margin
+            bg = c_total_bg if i == 0 else (c_alt_bg if i % 2 == 0 else "#FFFFFF")
+            font_use = font_bold if i == 0 else font_data
+
+            # 取数据
+            if i == 0:
+                vals = ["-", "合计", "", "", "", "", "", "", "", "", "", "", "", ""]
+            else:
+                row_data = self.tongbao_data[self.tongbao_data["单位"] == region]
+                d = row_data.iloc[0] if len(row_data) > 0 else {}
+                sales_rate = safe_float(d.get("基础品类完成率", 0))
+                profit_rate = safe_float(d.get("毛利完成率", 0))
+                comp_rate = safe_float(d.get("综合完成率", 0))
+                ml = safe_float(d.get("毛利完成量含非非", 0))
+                xs = safe_float(d.get("基础品类完成量含非非", 0))
+                maoli = ml / xs if xs else 0
+                vals = [
+                    str(i), region, "",
+                    f"{safe_float(d.get('基础品类目标', 0)):.2f}",
+                    f"{safe_float(d.get('基础品类完成量含非非', 0)):.4f}",
+                    f"{safe_float(d.get('基础品类完成量剔除非非', 0)):.4f}",
+                    f"{sales_rate * 100:.2f}%",
+                    f"{safe_float(d.get('毛利目标', 0)):.2f}",
+                    f"{safe_float(d.get('毛利完成量含非非', 0)):.4f}",
+                    f"{safe_float(d.get('毛利完成量剔除非非', 0)):.4f}",
+                    f"{profit_rate * 100:.2f}%",
+                    f"{maoli * 100:.2f}%",
+                    str(i), f"{comp_rate * 100:.2f}%"
+                ]
+
+            for j, (name, w) in enumerate(cols):
+                draw.rectangle([x, y, x + w, y + row_h], fill=bg, outline=c_border)
+                v = vals[j] if j < len(vals) else ""
+                # 完成率/毛利率/综合排名用颜色标注
+                color = c_text
+                if j in (6, 10, 11, 13) and i > 0:
+                    try:
+                        pct = float(v.replace("%", ""))
+                        color = c_rate_good if pct >= 50 else c_rate_bad
+                    except Exception:
+                        pass
+                vw = draw.textlength(str(v), font=font_use)
+                draw.text((x + (w - vw) / 2, y + 14), str(v), fill=color, font=font_use)
+                x += w
+            y += row_h
 
         output_path = OUTPUT_DIR / f"每日通报{self.report_date}.png"
         img.save(output_path, "PNG")
