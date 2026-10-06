@@ -94,6 +94,9 @@ function renderHome() {
                 <div class="home-app-logo">非</div>
                 <div class="home-app-name">非油报表助手</div>
                 <div class="home-app-ver">v${appInfo?.version || '0.1.0'} · 中国石化河南鹤壁石油分公司</div>
+                <button class="rail-back-btn" onclick="renderMaintenance()" title="维护设置" style="margin-left:4px;">${ICONS.settings}</button>
+                <button class="rail-back-btn" onclick="renderLogs()" title="运行日志">${ICONS.history}</button>
+                <button class="rail-back-btn" onclick="renderAbout()" title="关于">${ICONS.info}</button>
             </div>
             <div class="home-content">
                 <div class="home-hero">
@@ -465,19 +468,38 @@ function getAdjustTypeLabel(type) {
     return {'sales_add':'销售调增','sales_sub':'销售调减','profit_add':'毛利调增','profit_sub':'毛利调减'}[type] || type;
 }
 
-function showAddAdjustDialog() {
-    const stations = ['淇县','浚县','市区经营部','商客','鹤壁市新源站便利店','鹤壁市淇县二站便利店','鹤壁市浚县金城站便利店'];
+async function showAddAdjustDialog() {
+    // 从后端获取完整站点清单（含片区分组），获取失败时回退到内置清单
+    let stations = [];
+    try {
+        const result = await api('/api/maintenance/station-regions');
+        const regionMap = result.station_regions || {};
+        // 按片区分组排序，便于查找
+        const byRegion = {};
+        Object.entries(regionMap).forEach(([name, region]) => {
+            if (!byRegion[region]) byRegion[region] = [];
+            byRegion[region].push(name);
+        });
+        ['淇县', '浚县', '市区经营部', '鹤壁', '商客'].forEach(r => {
+            if (byRegion[r]) stations.push(...byRegion[r].sort());
+        });
+    } catch (e) {
+        stations = ['淇县', '浚县', '市区经营部', '商客'];
+    }
     showModal('添加调整数据', `
         <div style="display:flex; flex-direction:column; gap:16px;">
-            <div class="text-field"><label>站点名称</label><input type="text" id="adjStation" list="stationList" placeholder="输入或选择站点"><datalist id="stationList">${stations.map(s=>`<option value="${s}">`).join('')}</datalist></div>
+            <div class="text-field"><label>站点名称（可输入关键词筛选）</label><input type="text" id="adjStation" list="stationList" placeholder="输入或选择站点">${stations.length ? `<datalist id="stationList">${stations.map(s=>`<option value="${s}">`).join('')}</datalist>` : ''}</div>
             <div class="text-field"><label>调整类型</label><select id="adjType"><option value="sales_add">销售调增</option><option value="sales_sub">销售调减</option><option value="profit_add">毛利调增</option><option value="profit_sub">毛利调减</option></select></div>
             <div class="text-field"><label>调整金额（元）</label><input type="number" id="adjValue" placeholder="0.00" step="0.01"></div>
             <div class="text-field"><label>调整原因（选填）</label><input type="text" id="adjReason" placeholder="如：跨站销售调整"></div>
         </div>
     `, [
-        {label:'取消', cls:'btn-text', action:'closeModal'},
+        {label:'取消', cls:'btn-text', handler:() => closeModal()},
         {label:'添加', cls:'btn-filled', action:'confirmAddAdjust'}
     ]);
+    // 聚焦站点输入框
+    const input = document.getElementById('adjStation');
+    if (input) input.focus();
 }
 
 function confirmAddAdjust() {
@@ -639,10 +661,13 @@ async function loadPreview() {
             const rows = result.tongbao_rows || [];
             const reportDate = result.report_date || '';
 
-            // 按原日报"通报"工作表格式渲染
-            const regions = ['合计', '淇县', '浚县', '市区经营部', '商客'];
+            // 按原日报"通报"工作表可见区(A-V 22列)渲染
             const fmtPct = v => (v !== null && v !== undefined && !isNaN(v)) ? (v * 100).toFixed(2) + '%' : '-';
             const fmtNum = (v, d=4) => (v !== null && v !== undefined && !isNaN(v)) ? Number(v).toFixed(d) : '-';
+            const td = (inner) => `<td style="border:1px solid #BFBFBF; padding:6px;">${inner}</td>`;
+            const th2 = (txt, span=1) => `<th colspan="${span}" style="border:1px solid #fff; padding:8px 6px;">${txt}</th>`;
+            const thr = (txt) => `<th rowspan="2" style="border:1px solid #fff; padding:8px 6px;">${txt}</th>`;
+            const ths = (txt) => `<th style="border:1px solid #fff; padding:6px;">${txt}</th>`;
 
             let html = `
                 <div style="text-align:center; margin-bottom:16px;">
@@ -653,26 +678,17 @@ async function loadPreview() {
                     <table class="data-table" style="font-size:12px; text-align:center; border-collapse:collapse;">
                         <thead>
                             <tr style="background:#4472C4; color:#fff;">
-                                <th rowspan="2" style="border:1px solid #fff; padding:8px 6px;">序号</th>
-                                <th colspan="2" style="border:1px solid #fff; padding:8px 6px;">单位</th>
-                                <th rowspan="2" style="border:1px solid #fff; padding:8px 6px;">门零吨油销售额<br>(剔除烟草、洗车含非非)元</th>
-                                <th colspan="4" style="border:1px solid #fff; padding:8px 6px;">基础品类（权重40%）</th>
-                                <th colspan="5" style="border:1px solid #fff; padding:8px 6px;">毛利（权重50%）</th>
-                                <th rowspan="2" style="border:1px solid #fff; padding:8px 6px;">排名</th>
-                                <th rowspan="2" style="border:1px solid #fff; padding:8px 6px;">综合排名</th>
+                                ${thr('序号')}${thr('单位')}${thr('日均吨油销售')}
+                                ${thr('门零吨油销售额<br>(剔除烟草、洗车含非非)元')}
+                                ${thr('门零销售<br>(剔除烟草、洗车含非非)')}${thr('单位')}
+                                ${th2('基础品类（权重40%）', 4)}${th2('同比', 3)}${thr('单位')}
+                                ${th2('毛利（权重50%）', 5)}${th2('综合排名', 3)}
                             </tr>
                             <tr style="background:#8EAADB; color:#fff;">
-                                <th style="border:1px solid #fff; padding:6px;">县区</th>
-                                <th style="border:1px solid #fff; padding:6px;">站点</th>
-                                <th style="border:1px solid #fff; padding:6px;">目标计划</th>
-                                <th style="border:1px solid #fff; padding:6px;">完成量(含非非)</th>
-                                <th style="border:1px solid #fff; padding:6px;">完成量(剔除非非)</th>
-                                <th style="border:1px solid #fff; padding:6px;">完成率</th>
-                                <th style="border:1px solid #fff; padding:6px;">目标计划</th>
-                                <th style="border:1px solid #fff; padding:6px;">完成量(含非非)</th>
-                                <th style="border:1px solid #fff; padding:6px;">完成量(剔除非非)</th>
-                                <th style="border:1px solid #fff; padding:6px;">完成率</th>
-                                <th style="border:1px solid #fff; padding:6px;">毛利率</th>
+                                ${ths('目标计划')}${ths('完成量<br>(含非非)')}${ths('完成量<br>(剔除非非)')}${ths('完成率')}
+                                ${ths('同期')}${ths('增/减量')}${ths('增幅')}
+                                ${ths('目标计划')}${ths('完成量<br>(含非非)')}${ths('完成量<br>(剔除非非)')}${ths('完成率')}${ths('毛利率')}
+                                ${ths('名次')}${ths('单位')}${ths('完成率')}
                             </tr>
                         </thead>
                         <tbody>`;
@@ -682,21 +698,28 @@ async function loadPreview() {
                 const bg = isTotal ? '#D6DCE4' : (i % 2 === 0 ? '#F2F2F2' : '#FFFFFF');
                 const fw = isTotal ? 'font-weight:600;' : '';
                 html += `<tr style="background:${bg}; ${fw}">`;
-                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${d['序号'] ?? '-'}</td>`;
-                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${d['单位'] ?? ''}</td>`;
-                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${d['站点'] ?? ''}</td>`;
-                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtNum(d['门零吨油'], 2)}</td>`;
-                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtNum(d['基础品类目标'], 2)}</td>`;
-                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtNum(d['基础品类完成含非非'])}</td>`;
-                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtNum(d['基础品类完成剔除非非'])}</td>`;
-                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtPct(d['基础品类完成率'])}</td>`;
-                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtNum(d['毛利目标'], 2)}</td>`;
-                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtNum(d['毛利完成含非非'])}</td>`;
-                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtNum(d['毛利完成剔除非非'])}</td>`;
-                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtPct(d['毛利完成率'])}</td>`;
-                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtPct(d['毛利率'])}</td>`;
-                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${d['排名'] ?? '-'}</td>`;
-                html += `<td style="border:1px solid #BFBFBF; padding:6px;">${fmtPct(d['综合完成率'])}</td>`;
+                html += td(d['序号'] ?? '-');
+                html += td(d['单位'] ?? '');
+                html += td(fmtNum(d['日均吨油'], 2));
+                html += td(fmtNum(d['门零吨油销售额'], 2));
+                html += td(fmtNum(d['门零销售']));
+                html += td(d['单位'] ?? '');
+                html += td(fmtNum(d['基础品类目标'], 2));
+                html += td(fmtNum(d['基础品类完成含非非']));
+                html += td(fmtNum(d['基础品类完成剔除非非']));
+                html += td(fmtPct(d['基础品类完成率']));
+                html += td(fmtNum(d['同期']));
+                html += td(fmtNum(d['增减量']));
+                html += td(fmtPct(d['增幅']));
+                html += td(d['单位'] ?? '');
+                html += td(fmtNum(d['毛利目标'], 2));
+                html += td(fmtNum(d['毛利完成含非非']));
+                html += td(fmtNum(d['毛利完成剔除非非']));
+                html += td(fmtPct(d['毛利完成率']));
+                html += td(fmtPct(d['毛利率']));
+                html += td(d['名次'] ?? '-');
+                html += td(d['单位'] ?? '');
+                html += td(fmtPct(d['综合完成率']));
                 html += `</tr>`;
             });
 
@@ -802,9 +825,19 @@ function showSnackbar(message, type = 'info') {
 function showModal(title, content, actions = null) {
     const container = document.getElementById('modalContainer');
     let actionsHtml = actions
-        ? `<div class="modal-actions">${actions.map(a => `<button class="btn ${a.cls}" onclick="${a.action}">${a.label}</button>`).join('')}</div>`
+        ? `<div class="modal-actions">${actions.map((a, i) => `<button class="btn ${a.cls}" data-action-idx="${i}">${a.label}</button>`).join('')}</div>`
         : `<div class="modal-actions"><button class="btn btn-text" onclick="closeModal()">关闭</button></div>`;
     container.innerHTML = `<div class="modal-overlay" onclick="if(event.target===this) closeModal()"><div class="modal"><div class="modal-title">${title}</div><div>${content}</div>${actionsHtml}</div></div>`;
+    // 统一用 addEventListener 绑定（修复此前 inline onclick 缺括号导致按钮无反应的问题）
+    if (actions) {
+        actions.forEach((a, i) => {
+            const btn = container.querySelector(`[data-action-idx="${i}"]`);
+            if (btn) {
+                const handler = a.handler || (typeof window[a.action] === 'function' ? window[a.action] : null);
+                if (handler) btn.addEventListener('click', handler);
+            }
+        });
+    }
 }
 
 function closeModal() { document.getElementById('modalContainer').innerHTML = ''; }
@@ -822,6 +855,297 @@ function showConfirm(title, message, onConfirm) {
             </div>
         </div>`;
     document.getElementById('confirmBtn').onclick = () => { closeModal(); onConfirm(); };
+}
+
+// ===================================================
+// 维护设置 / 运行日志 / 关于（全屏页面，首页图标进入）
+// ===================================================
+function renderSubPageTopbar(title) {
+    return `
+        <div class="home-topbar">
+            <button class="rail-back-btn" onclick="renderHome()" title="返回首页">${ICONS.arrow_back}</button>
+            <div class="home-app-name">${title}</div>
+        </div>
+    `;
+}
+
+async function renderLogs() {
+    const app = document.getElementById('app');
+    app.innerHTML = `
+        <div class="view home-view">
+            ${renderSubPageTopbar('运行日志')}
+            <div class="home-content">
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon-box">${ICONS.history}</div>
+                        <div style="flex-grow:1;">
+                            <div class="card-title">运行日志</div>
+                            <div class="card-subtitle">最近 100 条处理记录</div>
+                        </div>
+                        <button class="btn btn-tonal" onclick="renderLogs()">${ICONS.refresh} 刷新</button>
+                    </div>
+                    <div id="logsContent" style="background:#1e1e1e; color:#d4d4d4; padding:16px; border-radius:var(--shape-sm); font-family:var(--font-mono); font-size:12px; max-height:70vh; overflow-y:auto;">
+                        正在加载日志...
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    try {
+        const result = await api('/api/logs/recent?n=100');
+        const logs = result.logs || [];
+        const el = document.getElementById('logsContent');
+        if (logs.length === 0) {
+            el.innerHTML = '<div style="padding:8px;">暂无日志记录，处理一次日报后即可看到日志</div>';
+        } else {
+            el.innerHTML = [...logs].reverse().map(l => {
+                let color = '#d4d4d4';
+                if (l.includes('[ERROR]')) color = '#F48771';
+                else if (l.includes('[WARN]')) color = '#CCA700';
+                else if (l.includes('[INFO]')) color = '#89D185';
+                return `<div style="color:${color}; margin-bottom:2px; white-space:pre-wrap;">${l}</div>`;
+            }).join('');
+        }
+    } catch (e) {
+        document.getElementById('logsContent').innerHTML = `<div style="color:#F48771;">加载日志失败: ${e.message}</div>`;
+    }
+}
+
+function renderMaintenance() {
+    const app = document.getElementById('app');
+    app.innerHTML = `
+        <div class="view home-view">
+            ${renderSubPageTopbar('维护设置')}
+            <div class="home-content">
+                <div class="maint-grid">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-icon-box">${ICONS.local_gas_station}</div>
+                            <div style="flex-grow:1;">
+                                <div class="card-title">轻油销量维护</div>
+                                <div class="card-subtitle">更新站点轻油销量数据（附表Y列）</div>
+                            </div>
+                        </div>
+                        <p style="margin-bottom:16px; color:var(--md-on-surface-variant); font-size:13px;">
+                            当前使用内置基础数据。后续提供轻油销量文件后，将编写自动解析规则。<br>
+                            <span class="chip warning" style="margin-top:8px;">接口已预留，待文件样例</span>
+                        </p>
+                        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                            <button class="btn btn-tonal" onclick="uploadLightOilFile()">${ICONS.upload} 上传文件更新</button>
+                            <button class="btn btn-outlined" onclick="viewLightOil()">${ICONS.visibility} 查看当前</button>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-icon-box">${ICONS.description}</div>
+                            <div style="flex-grow:1;">
+                                <div class="card-title">月度目标维护</div>
+                                <div class="card-subtitle">跨月时更新基础品类目标和毛利目标</div>
+                            </div>
+                        </div>
+                        <p style="margin-bottom:16px; color:var(--md-on-surface-variant); font-size:13px;">
+                            跨月时需手动输入各县区的基础品类目标和毛利目标，程序自动更新引用。
+                        </p>
+                        <div style="display:flex; gap:12px;">
+                            <button class="btn btn-tonal" onclick="showTargetUpdate()">${ICONS.edit} 更新月度目标</button>
+                            <button class="btn btn-outlined" onclick="viewTargets()">${ICONS.visibility} 查看当前目标</button>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-icon-box">${ICONS.store}</div>
+                            <div style="flex-grow:1;">
+                                <div class="card-title">站点片区映射</div>
+                                <div class="card-subtitle">43 个站点的县区归属</div>
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:12px;">
+                            <button class="btn btn-tonal" onclick="viewStationRegions()">${ICONS.visibility} 查看映射</button>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-icon-box">${ICONS.receipt_long}</div>
+                            <div style="flex-grow:1;">
+                                <div class="card-title">券系数表</div>
+                                <div class="card-subtitle">电子券规则编码 → 非油/尾气系数</div>
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:12px;">
+                            <button class="btn btn-tonal" onclick="viewQuanCoefficients()">${ICONS.visibility} 查看券系数</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderAbout() {
+    const app = document.getElementById('app');
+    app.innerHTML = `
+        <div class="view home-view">
+            ${renderSubPageTopbar('关于')}
+            <div class="home-content">
+                <div class="card" style="text-align:center; padding:48px; max-width:720px; margin:0 auto;">
+                    <div style="width:80px; height:80px; background:var(--md-primary); border-radius:var(--shape-lg); display:flex; align-items:center; justify-content:center; color:var(--md-on-primary); font-size:40px; font-weight:700; margin:0 auto 24px;">非</div>
+                    <h2 style="font-size:24px; font-weight:600; margin-bottom:8px;">非油报表助手</h2>
+                    <p style="color:var(--md-on-surface-variant); margin-bottom:4px;">版本 v${appInfo?.version || '0.1.0'}</p>
+                    <p style="color:var(--md-on-surface-variant); margin-bottom:24px; font-size:13px;">中国石化河南鹤壁石油分公司 · 非油品报表自动化工具</p>
+                    <div style="display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin-bottom:32px;">
+                        <span class="chip">Python + Flask</span>
+                        <span class="chip">Material 3 Design</span>
+                        <span class="chip">pywebview</span>
+                        <span class="chip">pandas</span>
+                    </div>
+                    <div style="text-align:left;">
+                        <h3 style="font-size:16px; font-weight:600; margin-bottom:12px;">功能特性</h3>
+                        <ul style="line-height:2; padding-left:20px;">
+                            <li>非油品日报全流程自动化处理（10 步）</li>
+                            <li>6 张导出表一次上传、自动识别</li>
+                            <li>通报表完全按原日报格式输出（含隐藏累月区）</li>
+                            <li>双格式输出：xlsx + 美化通报图片</li>
+                            <li>轻油销量 / 月度目标 / 券系数维护接口</li>
+                            <li>完整运行日志与版本管理</li>
+                            <li>预留多报表入口，可持续扩展</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+// 维护页面的操作
+async function uploadLightOilFile() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.xlsx,.xls,.csv';
+    input.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const formData = new FormData();
+        formData.append('file', file);
+        const result = await apiUpload('/api/maintenance/light-oil', formData);
+        showSnackbar(result.message || '上传成功', 'success');
+    };
+    input.click();
+}
+
+async function viewLightOil() {
+    const result = await api('/api/maintenance/light-oil');
+    const data = result.light_oil_sales || {};
+    let html = '<table class="data-table"><thead><tr><th>站点</th><th>轻油销量(吨)</th></tr></thead><tbody>';
+    const entries = Object.entries(data);
+    if (entries.length === 0) {
+        html += '<tr><td colspan="2" style="text-align:center; color:var(--md-on-surface-variant);">暂无数据</td></tr>';
+    }
+    entries.forEach(([k, v]) => {
+        html += `<tr><td>${k}</td><td>${typeof v === 'number' ? v.toFixed(3) : v}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    showModal('当前轻油销量', html);
+}
+
+async function showTargetUpdate() {
+    const now = new Date();
+    const regions = ['淇县', '浚县', '市区经营部', '商客'];
+    showModal('更新月度目标', `
+        <div style="display:flex; flex-direction:column; gap:16px;">
+            <div style="display:flex; gap:16px;">
+                <div class="text-field" style="flex:1;"><label>年份</label><input type="number" id="targetYear" value="${now.getFullYear()}"></div>
+                <div class="text-field" style="flex:1;"><label>月份</label><input type="number" id="targetMonth" value="${now.getMonth()+1}" min="1" max="12"></div>
+            </div>
+            <p style="font-weight:600;">各县区目标（万元）</p>
+            <div id="targetInputs">
+                ${regions.map(r => `
+                    <div style="display:flex; gap:12px; margin-bottom:12px; align-items:flex-end;">
+                        <div style="font-weight:500; min-width:100px;">${r}</div>
+                        <div class="text-field" style="flex:1;"><label>基础品类目标</label><input type="number" id="target_${r}_sales" step="0.01" placeholder="0"></div>
+                        <div class="text-field" style="flex:1;"><label>毛利目标</label><input type="number" id="target_${r}_profit" step="0.01" placeholder="0"></div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+    `, [
+        {label:'取消', cls:'btn-text', handler:() => closeModal()},
+        {label:'保存', cls:'btn-filled', action:'saveTargets'}
+    ]);
+}
+
+async function saveTargets() {
+    const year = parseInt(document.getElementById('targetYear').value);
+    const month = parseInt(document.getElementById('targetMonth').value);
+    const regions = ['淇县', '浚县', '市区经营部', '商客'];
+    const targets = {};
+    regions.forEach(r => {
+        const s = parseFloat(document.getElementById(`target_${r}_sales`).value) || 0;
+        const p = parseFloat(document.getElementById(`target_${r}_profit`).value) || 0;
+        targets[r] = {sales: s, profit: p};
+    });
+    await apiPost('/api/maintenance/targets', {year, month, targets});
+    closeModal();
+    showSnackbar(`${year}年${month}月目标已保存`, 'success');
+}
+
+async function viewTargets() {
+    const result = await api('/api/maintenance/targets');
+    const data = result.monthly_targets || {};
+    let html = '';
+    const entries = Object.entries(data);
+    if (entries.length === 0) {
+        html = '<p style="color:var(--md-on-surface-variant);">未配置目标（当前使用内置默认目标）</p>';
+    }
+    entries.forEach(([month, targets]) => {
+        html += `<h3 style="margin:16px 0 8px;">${month}</h3>`;
+        html += '<table class="data-table"><thead><tr><th>县区</th><th>基础品类目标</th><th>毛利目标</th></tr></thead><tbody>';
+        Object.entries(targets).forEach(([r, t]) => {
+            html += `<tr><td>${r}</td><td>${t.sales||0}</td><td>${t.profit||0}</td></tr>`;
+        });
+        html += '</tbody></table>';
+    });
+    showModal('月度目标', html);
+}
+
+async function viewStationRegions() {
+    const result = await api('/api/maintenance/station-regions');
+    const data = result.station_regions || {};
+    const byRegion = {};
+    Object.entries(data).forEach(([k, v]) => {
+        if (!byRegion[v]) byRegion[v] = [];
+        byRegion[v].push(k);
+    });
+    let html = '';
+    Object.keys(byRegion).sort().forEach(region => {
+        html += `<h3 style="margin:12px 0 8px;">${region}（${byRegion[region].length}个站点）</h3>`;
+        html += '<table class="data-table"><thead><tr><th>站点</th><th>所属县区</th></tr></thead><tbody>';
+        byRegion[region].sort().forEach(k => {
+            html += `<tr><td>${k}</td><td>${region}</td></tr>`;
+        });
+        html += '</tbody></table>';
+    });
+    showModal('站点片区映射', html);
+}
+
+async function viewQuanCoefficients() {
+    const result = await api('/api/maintenance/quan-coefficients');
+    const data = result.quan_coefficients || {};
+    const entries = Object.entries(data);
+    let html;
+    if (entries.length === 0) {
+        html = '<p style="color:var(--md-on-surface-variant);">暂无数据</p>';
+    } else {
+        html = `<p style="margin-bottom:8px; color:var(--md-on-surface-variant);">共 ${entries.length} 条规则</p>`;
+        html += '<div style="max-height:400px; overflow-y:auto;"><table class="data-table"><thead><tr><th>券规则编码</th><th>非油系数</th><th>尾气系数</th></tr></thead><tbody>';
+        entries.forEach(([k, v]) => {
+            html += `<tr><td>${k}</td><td>${v.non_oil||0}</td><td>${v.weiqi||0}</td></tr>`;
+        });
+        html += '</tbody></table></div>';
+    }
+    showModal('券系数', html);
 }
 
 // ===== 启动 =====

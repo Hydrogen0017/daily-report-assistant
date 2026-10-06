@@ -177,6 +177,16 @@ class DailyReportProcessor:
                 )
             logger.info(f"同期大类附表: {len(self.dalei_tongqi_fuhe)}行", step=2)
 
+            # 同期站级销售聚合（用于通报表同比列）
+            tq_org_col = self.get_columns(df_tq, ["名称|组织", "名称\\|组织", "组织名称"])
+            tq_amt_col = self.get_columns(df_tq, ["含税|销售金额", "含税销售金额"])
+            if tq_org_col and tq_amt_col:
+                tmp = df_tq[[tq_org_col, tq_amt_col]].copy()
+                tmp[tq_amt_col] = pd.to_numeric(tmp[tq_amt_col], errors="coerce").fillna(0)
+                g = tmp.groupby(tq_org_col)[tq_amt_col].sum()
+                self._tongqi_sales_map = dict(g)
+                logger.info(f"同期站级销售: {len(g)}个站点", step=2)
+
         # 生成大类透视
         self._build_dalei_pivot()
         self._notify_progress(2, 10, "大类原始数据入库完成")
@@ -527,13 +537,26 @@ class DailyReportProcessor:
         return {"status": "done"}
 
     def _build_tongbao(self):
-        """构建通报数据（县区级汇总）"""
+        """构建通报数据（县区级汇总，含同比/吨油/排名，与原日报列结构对齐）"""
         if self.fuhe_pivot is None:
             return None
 
         # 读取当月目标：配置优先，否则使用内置默认目标
         targets = get_monthly_targets(self.config, self.current_year, self.current_month)
         logger.info(f"当月目标: {targets}", step=10)
+
+        # 县区轻油合计（用于日均吨油）
+        oil_by_region = {}
+        if self.fuhe is not None and "所属县区" in self.fuhe.columns and "轻油销量" in self.fuhe.columns:
+            oil_by_region = self.fuhe.groupby("所属县区")["轻油销量"].sum().to_dict()
+
+        # 县区同期销售合计（站级同期销售按片区映射累加到县区）
+        region_map = get_station_regions(self.config)
+        tongqi_by_region = {}
+        for st, amt in (getattr(self, "_tongqi_sales_map", None) or {}).items():
+            reg = region_map.get(str(st).strip(), region_map.get(clean_station_name(str(st)), ""))
+            if reg:
+                tongqi_by_region[reg] = tongqi_by_region.get(reg, 0) + safe_float(amt)
 
         # 与原日报一致：淇县/浚县/市区经营部/鹤壁(新源站)/商客 五行（鹤壁、商客不参与排名）
         regions = ["淇县", "浚县", "市区经营部", "鹤壁", "商客"]
@@ -547,24 +570,53 @@ class DailyReportProcessor:
             actual_sales_without = safe_float(row_data.get("销售券后", 0)) / 10000
             actual_profit_with = safe_float(row_data.get("调整后毛利", 0)) / 10000
             actual_profit_without = safe_float(row_data.get("毛利卷后", 0)) / 10000
+            # 门零销售（万元）= 调整后零售 / 10000
+            retail = safe_float(row_data.get("调整后零售", 0)) / 10000
+            # 日均吨油 = 县区轻油合计 / 当月天数
+            avg_oil = safe_float(oil_by_region.get(region, 0)) / self.days_in_month
+            # 门零吨油销售额（元）= 门零销售万元 × 10000 / (日均吨油 × 30)
+            per_ton = retail * 10000 / (avg_oil * 30) if avg_oil else 0
             sales_rate = actual_sales_without / target_sales if target_sales else 0
             profit_rate = actual_profit_without / target_profit if target_profit else 0
+            # 同比
+            tongqi = safe_float(tongqi_by_region.get(region, 0)) / 10000
+            delta = actual_sales_without - tongqi
+            growth = delta / tongqi if tongqi else None
+            # 毛利率 = 毛利完成量 / 基础品类完成量
+            gross_margin = actual_profit_with / actual_sales_with if actual_sales_with else 0
             # 综合完成率 = 毛利×50% + 基础品类销售×40%(封顶130%) + 累月营业额×10%
             composite_rate = profit_rate * 0.5 + min(sales_rate, 1.3) * 0.4 + 0 * 0.1
 
             results.append({
                 "单位": region,
+                "日均吨油": avg_oil,
+                "门零吨油销售额": per_ton,
+                "门零销售": retail,
                 "基础品类目标": target_sales,
                 "基础品类完成量含非非": actual_sales_with,
                 "基础品类完成量剔除非非": actual_sales_without,
                 "基础品类完成率": sales_rate,
+                "同期": tongqi,
+                "增减量": delta,
+                "增幅": growth,
                 "毛利目标": target_profit,
                 "毛利完成量含非非": actual_profit_with,
                 "毛利完成量剔除非非": actual_profit_without,
                 "毛利完成率": profit_rate,
+                "毛利率": gross_margin,
                 "综合完成率": composite_rate
             })
-        return pd.DataFrame(results)
+
+        df = pd.DataFrame(results)
+        # 名次：考核县区按综合完成率降序
+        ranked = ["淇县", "浚县", "市区经营部"]
+        if len(df) > 0:
+            rank_map = {}
+            ranked_df = df[df["单位"].isin(ranked)].sort_values("综合完成率", ascending=False)
+            for rank_idx, (_, row) in enumerate(ranked_df.iterrows(), 1):
+                rank_map[row["单位"]] = rank_idx
+            df["名次"] = df["单位"].map(lambda r: rank_map.get(r, None))
+        return df
 
     def run_all(self, file_paths, adjustments=None):
         """执行完整处理流程"""
@@ -603,174 +655,236 @@ class DailyReportProcessor:
             "tongbao_rows": len(self.tongbao_data) if self.tongbao_data is not None else 0
         }
 
+
+
     def output_xlsx(self, template_path=None):
-        """输出xlsx文件，'通报'表按原日报格式排版"""
+        """输出xlsx文件，'通报'表完全按原日报78列结构排版（A-V可见，W-BZ累月区隐藏保留）"""
         logger.info("输出xlsx文件", step=10)
         import openpyxl
-        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side, numbers
+        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
         from openpyxl.utils import get_column_letter
 
         wb = openpyxl.Workbook()
-
-        # ===== 通报表（按原日报格式） =====
         ws = wb.active
         ws.title = "通报"
 
-        # 样式定义
+        # ===== 样式 =====
         f_title = Font(name="微软雅黑", size=14, bold=True)
+        f_note = Font(name="微软雅黑", size=9)
         f_header = Font(name="微软雅黑", size=10, bold=True, color="FFFFFF")
         f_data = Font(name="微软雅黑", size=10)
         f_bold = Font(name="微软雅黑", size=10, bold=True)
         fill_header = PatternFill("solid", fgColor="4472C4")
         fill_subheader = PatternFill("solid", fgColor="8EAADB")
         fill_total = PatternFill("solid", fgColor="D6DCE4")
-        fill_alt = PatternFill("solid", fgColor="F2F2F2")
         thin = Side(style="thin", color="BFBFBF")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
         align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
         align_left = Alignment(horizontal="left", vertical="center")
 
-        # 列宽
-        col_widths = {1: 6, 2: 12, 3: 12, 4: 14, 5: 12, 6: 14, 7: 14, 8: 10,
-                      9: 12, 10: 14, 11: 14, 12: 10, 13: 10, 14: 10, 15: 12}
-        for c, w in col_widths.items():
+        # ===== 列宽（可见区 A-V） =====
+        widths = {1:5, 2:10, 3:11, 4:13, 5:11, 6:10, 7:9, 8:9, 9:9, 10:9,
+                 11:9, 12:9, 13:9, 14:10, 15:9, 16:9, 17:9, 18:9, 19:9, 20:6, 21:10, 22:9}
+        for c, w in widths.items():
             ws.column_dimensions[get_column_letter(c)].width = w
+        # 隐藏列 W-BZ（23-78），保留数据结构不删除
+        for c in range(23, 79):
+            ws.column_dimensions[get_column_letter(c)].hidden = True
+            ws.column_dimensions[get_column_letter(c)].width = 8
 
-        # 第1行：标题
-        ws.merge_cells("A1:O1")
+        # ===== 第1行：标题 =====
         ws["A1"] = f"{self.current_year}年{self.current_month}月非油品基础品类销售进度表"
         ws["A1"].font = f_title
         ws["A1"].alignment = align_center
-        ws.row_dimensions[1].height = 36
+        ws.row_dimensions[1].height = 32
 
-        # 第2行：日期
-        ws.merge_cells("A2:E2")
+        # ===== 第2行：日期 =====
         ws["A2"] = f"报表日期：{self.current_year}年{self.current_month}月1-{self.today_day}日"
         ws["A2"].font = f_data
         ws["A2"].alignment = align_left
-        ws.merge_cells("F2:G2")
-        ws["F2"] = "月时间进度："
-        ws["F2"].font = f_data
-        ws["F2"].alignment = Alignment(horizontal="right", vertical="center")
-        ws["H2"] = round(self.today_day / self.days_in_month, 4)
-        ws["H2"].font = f_data
-        ws["H2"].number_format = "0.00%"
-        ws["H2"].alignment = align_center
-        ws.merge_cells("N2:O2")
-        ws["N2"] = "单位：万元"
-        ws["N2"].font = f_data
-        ws["N2"].alignment = Alignment(horizontal="right", vertical="center")
+        ws["Q2"] = "月时间进度："
+        ws["Q2"].font = f_data
+        ws["Q2"].alignment = Alignment(horizontal="right", vertical="center")
+        ws["R2"] = round(self.today_day / self.days_in_month, 4)
+        ws["R2"].number_format = "0.00%"
+        ws["R2"].font = f_data
+        ws["R2"].alignment = align_center
+        ws["BA2"] = "单位/万元"
+        ws["BA2"].font = f_data
 
-        # 第3行：主表头
-        headers3 = {
-            1: "序号", 2: "单位", 4: "门零吨油销售额\n(剔除烟草、洗车含非非)元",
-            5: "基础品类（权重40%）", 9: "毛利（权重50%）", 13: "排名", 14: "综合排名"
+        # ===== 第3行：公式说明 + 年进度 =====
+        ws["A3"] = ("综合完成率＝毛利完成率×50%＋基础品类销售额完成率×40%+累月营业额计划完成率10%;"
+                    "基础品类完成率130%封顶")
+        ws["A3"].font = f_note
+        ws["A3"].alignment = align_left
+        ws["Z3"] = "年进度："
+        ws["Z3"].font = f_note
+        ws["Z3"].alignment = Alignment(horizontal="right", vertical="center")
+
+        # ===== 第4行：分区标题 =====
+        ws["A4"] = "当期完成情况"
+        ws["A4"].font = f_bold
+        ws["Z4"] = "累月完成情况"
+        ws["Z4"].font = f_bold
+
+        # ===== 第5行：主表头 =====
+        main_headers = {
+            1: "序号", 2: "单位", 3: "日均吨油销售",
+            4: "门零吨油销售额\\n(剔除烟草、洗车含非非)元",
+            5: "门零销售\\n(剔除烟草、洗车含非非)",
+            6: "单位", 7: "基础品类（权重40%）", 11: "同比",
+            14: "单位", 15: "毛利（权重50%）", 20: "综合排名",
+            26: "综合排名", 28: "基础品类（权重50%）", 53: "毛利（权重50%）"
         }
-        for c, v in headers3.items():
-            cell = ws.cell(row=3, column=c, value=v)
+        for c, v in main_headers.items():
+            cell = ws.cell(row=5, column=c, value=v)
             cell.font = f_header
             cell.fill = fill_header
             cell.alignment = align_center
-            cell.border = border
-        # 合并第3行单元格
-        ws.merge_cells("B3:C3")    # 单位
-        ws.merge_cells("E3:H3")    # 基础品类
-        ws.merge_cells("I3:M3")    # 毛利
-        ws.merge_cells("N3:N4")    # 排名
-        ws.merge_cells("O3:O4")    # 综合排名
-        ws.merge_cells("A3:A4")    # 序号
-        ws.merge_cells("D3:D4")    # 门零吨油
-        ws.row_dimensions[3].height = 30
+        # 合并
+        for rng in ["A5:A6", "B5:B6", "C5:C6", "D5:D6", "E5:E6", "F5:F6",
+                    "G5:J5", "K5:M5", "N5:N6", "O5:S5", "T5:V5", "Z5:AA5",
+                    "AB5:AZ5", "BA5:BZ5"]:
+            ws.merge_cells(rng)
+        ws.row_dimensions[5].height = 28
 
-        # 第4行：子表头
-        subheaders = {5: "目标计划", 6: "完成量\n(含非非)", 7: "完成量\n(剔除非非)", 8: "完成率",
-                      9: "目标计划", 10: "完成量\n(含非非)", 11: "完成量\n(剔除非非)", 12: "完成率", 13: "毛利率"}
-        for c, v in subheaders.items():
-            cell = ws.cell(row=4, column=c, value=v)
+        # ===== 第6行：子表头 =====
+        month_names = [f"{m}月目标" for m in range(1, 11)] + ["合计目标"]
+        sales_months = [f"{m}月" for m in range(1, 13)]
+        sub_headers = {
+            7: "目标计划", 8: "完成量\\n(含非非互促赠券)", 9: "完成量\\n(剔除非非互促赠券)", 10: "完成率",
+            11: "同期", 12: "增/减量", 13: "增幅",
+            15: "目标计划", 16: "完成量\\n(含非非互促赠券)", 17: "完成量\\n(剔除非非互促赠券)",
+            18: "完成率", 19: "毛利率",
+            20: "名次", 21: "单位", 22: "完成率",
+            26: "单位", 27: "完成率",
+            51: "合计销售", 52: "完成率",
+            76: "合计销售", 77: "完成率", 78: "毛利率"
+        }
+        # 基础品类月度目标 AB(28)~AL(38)
+        for i, name in enumerate(month_names):
+            sub_headers[28 + i] = name
+        # 基础品类月度销售 AM(39)~AX(50)
+        for i, name in enumerate(sales_months):
+            sub_headers[39 + i] = name
+        # 毛利月度目标 BA(53)~BK(63)
+        for i, name in enumerate(month_names):
+            sub_headers[53 + i] = name
+        # 毛利月度销售 BL(64)~BW(75)
+        for i, name in enumerate(sales_months):
+            sub_headers[64 + i] = name
+        for c, v in sub_headers.items():
+            cell = ws.cell(row=6, column=c, value=v)
             cell.font = f_header
             cell.fill = fill_subheader
             cell.alignment = align_center
-            cell.border = border
-        # 补充B4/C4（单位的子行）
-        ws.cell(row=4, column=2, value="县区").font = f_header
-        ws.cell(row=4, column=2).fill = fill_subheader
-        ws.cell(row=4, column=2).alignment = align_center
-        ws.cell(row=4, column=2).border = border
-        ws.cell(row=4, column=3, value="站点").font = f_header
-        ws.cell(row=4, column=3).fill = fill_subheader
-        ws.cell(row=4, column=3).alignment = align_center
-        ws.cell(row=4, column=3).border = border
-        ws.row_dimensions[4].height = 30
-
-        # 给所有表头加边框
-        for r in [3, 4]:
-            for c in range(1, 16):
+        ws.row_dimensions[6].height = 34
+        # 表头边框
+        for r in [5, 6]:
+            for c in range(1, 79):
                 ws.cell(row=r, column=c).border = border
 
-        # 第5行起：合计 + 淇县/浚县/市区经营部/鹤壁/商客（与原日报一致，共6行）
+        # ===== 数据行（R7合计 + R8-12五个县区） =====
         regions = ["合计", "淇县", "浚县", "市区经营部", "鹤壁", "商客"]
-        # 预计算排名（按综合完成率降序，仅考核县区：淇县/浚县/市区经营部）
-        ranked_regions = ["淇县", "浚县", "市区经营部"]
-        region_rank = {}
-        if self.tongbao_data is not None and len(self.tongbao_data) > 0:
-            ranked = self.tongbao_data[self.tongbao_data["单位"].isin(ranked_regions)].sort_values("综合完成率", ascending=False)
-            for rank_idx, (_, row) in enumerate(ranked.iterrows(), 1):
-                region_rank[row["单位"]] = rank_idx
-        for i, region in enumerate(regions):
-            r = 5 + i
-            ws.cell(row=r, column=1, value=("-" if i == 0 else i)).font = f_bold
-            ws.cell(row=r, column=2, value=region).font = f_bold if i == 0 else f_data
-            ws.cell(row=r, column=3, value="合计" if i == 0 else "").font = f_bold if i == 0 else f_data
+        # 当月对应的累月列
+        m = self.current_month
+        tgt_col = 28 + (m - 1)        # 基础品类目标月列
+        sales_col = 39 + (m - 1)      # 基础品类销售月列
+        ptgt_col = 53 + (m - 1)       # 毛利目标月列
+        psales_col = 64 + (m - 1)     # 毛利销售月列
 
-            # 填充数据
-            if i == 0:
-                # 合计行 = 各县区之和（第6-10行）
-                for c in range(4, 16):
-                    col_letter = get_column_letter(c)
-                    ws.cell(row=r, column=c, value=f"=SUM({col_letter}6:{col_letter}10)")
-                ws.cell(row=r, column=1).value = "-"
+        for i, region in enumerate(regions):
+            r = 7 + i
+            is_total = (i == 0)
+            # A/B列
+            ws.cell(row=r, column=1, value=("合计" if is_total else i))
+            ws.cell(row=r, column=2, value=region)
+            ws.cell(row=r, column=6, value=region)   # F 单位
+            ws.cell(row=r, column=14, value=region)  # N 单位
+            ws.cell(row=r, column=21, value=region)  # U 单位
+            ws.cell(row=r, column=26, value=region)  # Z 单位(累月)
+
+            if is_total:
+                # 合计行公式
+                for c in [3, 4, 5, 7, 8, 9, 11, 12, 15, 16, 17, tgt_col, 38, sales_col, 51,
+                          ptgt_col, 63, psales_col, 76]:
+                    ws.cell(row=r, column=c, value=f"=SUM({get_column_letter(c)}8:{get_column_letter(c)}12)")
+                ws.cell(row=r, column=10, value="=IF(G7=0,0,I7/G7)")            # J 完成率
+                ws.cell(row=r, column=13, value="=IF(K7=0,0,L7/K7)")            # M 增幅
+                ws.cell(row=r, column=18, value="=IF(O7=0,0,Q7/O7)")            # R 毛利完成率
+                ws.cell(row=r, column=19, value="=IF(H7=0,0,P7/H7)")            # S 毛利率
+                ws.cell(row=r, column=52, value="=IF(AL7=0,0,AY7/AL7)")         # AZ 累月完成率
+                ws.cell(row=r, column=77, value="=IF(BK7=0,0,BX7/BK7)")         # BY 毛利完成率
+                ws.cell(row=r, column=78, value="=IF(AY7=0,0,BX7/AY7)")         # BZ 毛利率
+                ws.cell(row=r, column=22, value=f"=IF(OR(G7=0,O7=0),0,Q7/O7*0.5+MIN(I7/G7,1.3)*0.4)")  # V 综合
+                ws.cell(row=r, column=27, value="=IF(OR(AL7=0,BK7=0),0,BX7/BK7*0.5+MIN(AY7/AL7,1.3)*0.4)")  # AA
             else:
-                # 各县区数据
                 row_data = self.tongbao_data[self.tongbao_data["单位"] == region]
                 if len(row_data) > 0:
                     d = row_data.iloc[0]
-                    ws.cell(row=r, column=5, value=round(safe_float(d.get("基础品类目标", 0)), 2))
-                    ws.cell(row=r, column=6, value=round(safe_float(d.get("基础品类完成量含非非", 0)), 4))
-                    ws.cell(row=r, column=7, value=round(safe_float(d.get("基础品类完成量剔除非非", 0)), 4))
-                    rate = safe_float(d.get("基础品类完成率", 0))
-                    ws.cell(row=r, column=8, value=round(rate, 4))
-                    ws.cell(row=r, column=8).number_format = "0.00%"
-                    ws.cell(row=r, column=9, value=round(safe_float(d.get("毛利目标", 0)), 2))
-                    ws.cell(row=r, column=10, value=round(safe_float(d.get("毛利完成量含非非", 0)), 4))
-                    ws.cell(row=r, column=11, value=round(safe_float(d.get("毛利完成量剔除非非", 0)), 4))
-                    prate = safe_float(d.get("毛利完成率", 0))
-                    ws.cell(row=r, column=12, value=round(prate, 4))
-                    ws.cell(row=r, column=12).number_format = "0.00%"
-                    # 毛利率 = 毛利完成量 / 基础品类完成量
-                    ml = safe_float(d.get("毛利完成量含非非", 0))
-                    xs = safe_float(d.get("基础品类完成量含非非", 0))
-                    ws.cell(row=r, column=13, value=round(ml / xs, 4) if xs else 0)
-                    ws.cell(row=r, column=13).number_format = "0.00%"
-                    # 综合完成率
-                    comp = safe_float(d.get("综合完成率", 0))
-                    ws.cell(row=r, column=15, value=round(comp, 4))
-                    ws.cell(row=r, column=15).number_format = "0.00%"
-                    # 排名（按综合完成率降序，鹤壁/商客不参与排名）
-                    ws.cell(row=r, column=14, value=region_rank.get(region, ""))
+                    g = safe_float(d.get("基础品类目标", 0))
+                    h = safe_float(d.get("基础品类完成量含非非", 0))
+                    ii = safe_float(d.get("基础品类完成量剔除非非", 0))
+                    jj = safe_float(d.get("基础品类完成率", 0))
+                    kk = safe_float(d.get("同期", 0))
+                    ll = safe_float(d.get("增减量", 0))
+                    mm = d.get("增幅")
+                    o = safe_float(d.get("毛利目标", 0))
+                    p = safe_float(d.get("毛利完成量含非非", 0))
+                    q = safe_float(d.get("毛利完成量剔除非非", 0))
+                    rr = safe_float(d.get("毛利完成率", 0))
+                    ss = safe_float(d.get("毛利率", 0))
+                    rank = d.get("名次")
+                    vv = safe_float(d.get("综合完成率", 0))
+                    cc = safe_float(d.get("日均吨油", 0))
+                    dd = safe_float(d.get("门零吨油销售额", 0))
+                    ee = safe_float(d.get("门零销售", 0))
+
+                    ws.cell(row=r, column=3, value=round(cc, 2))
+                    ws.cell(row=r, column=4, value=round(dd, 2))
+                    ws.cell(row=r, column=5, value=round(ee, 4))
+                    ws.cell(row=r, column=7, value=round(g, 2))
+                    ws.cell(row=r, column=8, value=round(h, 4))
+                    ws.cell(row=r, column=9, value=round(ii, 4))
+                    ws.cell(row=r, column=10, value=round(jj, 4))
+                    ws.cell(row=r, column=11, value=round(kk, 4))
+                    ws.cell(row=r, column=12, value=round(ll, 4))
+                    ws.cell(row=r, column=13, value=round(mm, 4) if mm is not None else None)
+                    ws.cell(row=r, column=15, value=round(o, 2))
+                    ws.cell(row=r, column=16, value=round(p, 4))
+                    ws.cell(row=r, column=17, value=round(q, 4))
+                    ws.cell(row=r, column=18, value=round(rr, 4))
+                    ws.cell(row=r, column=19, value=round(ss, 4))
+                    ws.cell(row=r, column=20, value=rank if rank is not None else "")
+                    ws.cell(row=r, column=22, value=round(vv, 4))
+                    # 累月区：当月目标/当月销售/合计
+                    ws.cell(row=r, column=tgt_col, value=round(g, 2))
+                    ws.cell(row=r, column=38, value=round(g, 2))       # AL 合计目标
+                    ws.cell(row=r, column=sales_col, value=round(ii, 4))
+                    ws.cell(row=r, column=51, value=round(ii, 4))      # AY 合计销售
+                    ws.cell(row=r, column=52, value=round(jj, 4))      # AZ 完成率
+                    ws.cell(row=r, column=ptgt_col, value=round(o, 2))
+                    ws.cell(row=r, column=63, value=round(o, 2))       # BK 合计目标
+                    ws.cell(row=r, column=psales_col, value=round(q, 4))
+                    ws.cell(row=r, column=76, value=round(q, 4))       # BX 合计销售
+                    ws.cell(row=r, column=77, value=round(rr, 4))      # BY 完成率
+                    ws.cell(row=r, column=78, value=round(ss, 4))      # BZ 毛利率
 
             # 格式化
-            for c in range(1, 16):
+            pct_cols = {10, 13, 18, 19, 22, 27, 52, 77}
+            for c in range(1, 79):
                 cell = ws.cell(row=r, column=c)
                 cell.border = border
-                cell.alignment = align_center
-                if i == 0:
+                if c <= 22:
+                    cell.alignment = align_center
+                if is_total:
                     cell.font = f_bold
                     cell.fill = fill_total
                 elif i % 2 == 0:
-                    cell.fill = fill_alt
-                if c in (8, 12, 13, 15) and i > 0:
+                    cell.fill = PatternFill("solid", fgColor="F2F2F2")
+                if c in pct_cols:
                     cell.number_format = "0.00%"
-            ws.row_dimensions[r].height = 24
+            ws.row_dimensions[r].height = 22
 
         # ===== 附表 =====
         if self.fuhe is not None:

@@ -291,46 +291,51 @@ def preview_data():
     import openpyxl
     wb = openpyxl.load_workbook(outputs[0], data_only=True)
 
-    # 读取通报表，解析为结构化数据
+    # 读取通报表，解析为结构化数据（新78列结构，数据行 R7-R12）
     tongbao_rows = []
     if "通报" in wb.sheetnames:
         ws = wb["通报"]
-        # 第5行起是数据行（合计+5行县区，含鹤壁），列: A序号 B县区 C站点 D门零 E目标 F含 G剔 H完成率 I毛利目标 J含 K剔 L完成率 M毛利率 N排名 O综合
+        # 列: A(1)序号 B(2)单位 C(3)日均吨油 D(4)门零吨油销售额 E(5)门零销售
+        #     G(7)目标 H(8)完成含 I(9)完成剔 J(10)完成率 K(11)同期 L(12)增减量 M(13)增幅
+        #     O(15)毛利目标 P(16)毛利含 Q(17)毛利剔 R(18)毛利完成率 S(19)毛利率
+        #     T(20)名次 V(22)综合完成率
         raw_rows = []
-        for row in ws.iter_rows(min_row=5, max_row=10, values_only=True):
+        for row in ws.iter_rows(min_row=7, max_row=12, values_only=True):
             raw_rows.append(list(row))
 
+        def v(vals, c):
+            return vals[c] if c < len(vals) else None
+
         for i, vals in enumerate(raw_rows):
-            if len(vals) >= 15:
-                # 合计行是公式（=SUM(...)），data_only 读取为 None，需要手动计算
+            if len(vals) >= 23:
                 if i == 0:
-                    # 数值列直接求和；完成率列除外（用合计值重新计算）
-                    rate_cols = {7, 11, 12, 14}  # 完成率/完成率/毛利率/综合
-                    for c in range(3, 15):
-                        if c in rate_cols:
-                            continue
-                        if vals[c] is None:
-                            col_sum = 0
-                            for j in range(1, len(raw_rows)):
-                                v = raw_rows[j][c] if c < len(raw_rows[j]) else 0
-                                col_sum += v if isinstance(v, (int, float)) else 0
-                            vals[c] = col_sum
-                    # 完成率 = 合计完成量 / 合计目标
-                    vals[7] = (vals[5] / vals[4]) if (vals[4] is not None and vals[4] != 0) else 0
-                    vals[11] = (vals[9] / vals[8]) if (vals[8] is not None and vals[8] != 0) else 0
-                    vals[12] = (vals[9] / vals[5]) if (vals[5] is not None and vals[5] != 0) else 0
-                    # 综合完成率 = 毛利完成率×50% + 基础品类完成率×40%(封顶130%) + 累月×10%
-                    vals[14] = (vals[11] or 0) * 0.5 + min(vals[7] or 0, 1.3) * 0.4
-                    vals[14] = round(vals[14], 4) if vals[14] else 0
+                    # 合计行是公式，data_only 读取为 None，手动计算
+                    # 数值列求和: C(2) D(3) E(4) G(6) H(7) I(8) K(10) L(11) O(14) P(15) Q(16)
+                    for c in [2, 3, 4, 6, 7, 8, 10, 11, 14, 15, 16]:
+                        col_sum = 0
+                        for j in range(1, len(raw_rows)):
+                            x = v(raw_rows[j], c)
+                            col_sum += x if isinstance(x, (int, float)) else 0
+                        vals[c] = col_sum
+                    # 率列计算
+                    g, h_, ii = v(vals,6), v(vals,7), v(vals,8)
+                    o, p_, q = v(vals,14), v(vals,15), v(vals,16)
+                    k_ = v(vals,10)
+                    vals[9] = (ii / g) if g else 0                 # J 完成率
+                    vals[12] = ((v(vals,11) or 0) / k_) if k_ else None  # M 增幅
+                    vals[17] = (q / o) if o else 0                 # R 毛利完成率
+                    vals[18] = (p_ / h_) if h_ else 0              # S 毛利率
+                    vals[21] = ((q / o) * 0.5 + min(ii / g, 1.3) * 0.4) if (o and g) else 0  # V 综合
 
                 tongbao_rows.append({
-                    "序号": vals[0], "单位": vals[1], "站点": vals[2],
-                    "门零吨油": vals[3],
-                    "基础品类目标": vals[4], "基础品类完成含非非": vals[5],
-                    "基础品类完成剔除非非": vals[6], "基础品类完成率": vals[7],
-                    "毛利目标": vals[8], "毛利完成含非非": vals[9],
-                    "毛利完成剔除非非": vals[10], "毛利完成率": vals[11],
-                    "毛利率": vals[12], "排名": vals[13], "综合完成率": vals[14]
+                    "序号": v(vals,0), "单位": v(vals,1),
+                    "日均吨油": v(vals,2), "门零吨油销售额": v(vals,3), "门零销售": v(vals,4),
+                    "基础品类目标": v(vals,6), "基础品类完成含非非": v(vals,7),
+                    "基础品类完成剔除非非": v(vals,8), "基础品类完成率": v(vals,9),
+                    "同期": v(vals,10), "增减量": v(vals,11), "增幅": v(vals,12),
+                    "毛利目标": v(vals,14), "毛利完成含非非": v(vals,15),
+                    "毛利完成剔除非非": v(vals,16), "毛利完成率": v(vals,17),
+                    "毛利率": v(vals,18), "名次": v(vals,19), "综合完成率": v(vals,21)
                 })
 
     # 附表数据（前20行摘要）
@@ -424,7 +429,8 @@ def list_log_files():
 def maintenance_light_oil():
     config = load_config()
     if request.method == "GET":
-        return jsonify({"light_oil_sales": config.get("light_oil_sales", {})})
+        from base_data import get_light_oil_sales
+        return jsonify({"light_oil_sales": get_light_oil_sales(config)})
     elif request.method == "POST":
         data = request.json
         if "file" in request.files:
@@ -447,7 +453,12 @@ def maintenance_light_oil():
 def maintenance_targets():
     config = load_config()
     if request.method == "GET":
-        return jsonify({"monthly_targets": config.get("monthly_targets", {})})
+        from base_data import get_monthly_targets, DEFAULT_MONTHLY_TARGETS
+        configured = config.get("monthly_targets", {})
+        if not configured:
+            # 未配置时展示内置默认目标
+            return jsonify({"monthly_targets": DEFAULT_MONTHLY_TARGETS, "is_default": True})
+        return jsonify({"monthly_targets": configured, "is_default": False})
     elif request.method == "POST":
         data = request.json
         year = data.get("year")
@@ -462,7 +473,9 @@ def maintenance_targets():
 def maintenance_station_regions():
     config = load_config()
     if request.method == "GET":
-        return jsonify({"station_regions": config.get("station_regions", {})})
+        # 配置为空时返回内置基础数据（完整站点清单），保证前端站点选择可用
+        from base_data import get_station_regions
+        return jsonify({"station_regions": get_station_regions(config)})
     elif request.method == "POST":
         data = request.json
         region_map = data.get("region_map", {})
@@ -475,7 +488,8 @@ def maintenance_station_regions():
 def maintenance_quan_coefficients():
     config = load_config()
     if request.method == "GET":
-        return jsonify({"quan_coefficients": config.get("quan_coefficients", {})})
+        from base_data import get_quan_coefficients
+        return jsonify({"quan_coefficients": get_quan_coefficients(config)})
     elif request.method == "POST":
         data = request.json
         coefficients = data.get("coefficients", {})
