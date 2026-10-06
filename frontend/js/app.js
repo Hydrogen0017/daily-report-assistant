@@ -36,7 +36,9 @@ const ICONS = {
     zap: '<svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     table_chart: '<svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M10 10h4v4h-4zm0 6h4v4h-4zm6-12h-4v4h4zm-6 0H6v4h4zm6 12h4v4h-4zm0-6h4v4h-4z"/></svg>',
     local_gas_station: '<svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M19.77 7.23l.01-.01-3.72-3.72L15 4.56l2.11 2.11c-.94.36-1.61 1.27-1.61 2.33 0 1.38 1.12 2.5 2.5 2.5.36 0 .69-.08 1-.21v7.21c0 .55-.45 1-1 1s-1-.45-1-1V14c0-1.1-.9-2-2-2h-1V5c0-1.1-.9-2-2-2H6c-1.1 0-2 .9-2 2v16h10v-7.5h1.5v5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V9c0-.69-.28-1.32-.73-1.77zM12 10H6V5h6v5z"/></svg>',
-    receipt_long: '<svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M19 5v14H5V5h14m0-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 6H7v2h10v-2zm0 4H7v2h10v-2zM7 9h10V7H7v2z"/></svg>'
+    receipt_long: '<svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M19 5v14H5V5h14m0-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 6H7v2h10v-2zm0 4H7v2h10v-2zM7 9h10V7H7v2z"/></svg>',
+    // 报表之窗：与 exe 应用图标同款设计（卡片+折线，以遮罩挖空）
+    report_card: '<svg class="icon" viewBox="0 0 24 24"><defs><mask id="rc-chart"><rect width="24" height="24" fill="#fff"/><path d="M6.5 15.8 10 11l3 2.2L18 7.2" stroke="#000" stroke-width="2.1" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="15.8" r="1.75" fill="#000"/><circle cx="10" cy="11" r="1.75" fill="#000"/><circle cx="13" cy="13.2" r="1.75" fill="#000"/><circle cx="18" cy="7.2" r="1.75" fill="#000"/></mask></defs><path fill="currentColor" mask="url(#rc-chart)" d="M6 2h12c1.1 0 2 .9 2 2v16c0 1.1-.9 2-2 2H6c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2z"/></svg>'
 };
 
 // ===== API 调用 =====
@@ -91,7 +93,7 @@ function renderHome() {
     document.getElementById('app').innerHTML = `
         <div class="view home-view">
             <div class="home-topbar">
-                <div class="home-app-logo">非</div>
+                <div class="home-app-logo"><svg class="icon" style="width:26px;height:26px;" viewBox="0 0 24 24" fill="none"><path d="M4 17.5 9 12l3.5 2.5L20 6.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="4" cy="17.5" r="1.9" fill="currentColor"/><circle cx="9" cy="12" r="1.9" fill="currentColor"/><circle cx="12.5" cy="14.5" r="1.9" fill="currentColor"/><circle cx="20" cy="6.5" r="1.9" fill="currentColor"/></svg></div>
                 <div class="home-app-name">非油报表助手</div>
                 <div class="home-app-ver">v${appInfo?.version || '0.1.0'} · 中国石化河南鹤壁石油分公司</div>
                 <button class="rail-back-btn" onclick="renderMaintenance()" title="维护设置" style="margin-left:4px;">${ICONS.settings}</button>
@@ -154,7 +156,7 @@ function getRouteById(id) {
     return map[id] || id;
 }
 function getReportIcon(id) {
-    const icons = {'daily_report': ICONS.description, 'monthly_report': ICONS.analytics,
+    const icons = {'daily_report': ICONS.report_card, 'monthly_report': ICONS.analytics,
                    'category_report': ICONS.receipt_long, 'station_report': ICONS.store};
     return icons[id] || ICONS.file;
 }
