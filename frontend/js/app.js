@@ -240,16 +240,30 @@ function updateRailStatus() {
 }
 
 function goStep(stepId) {
-    // 仅允许前进到已完成或当前步骤
     const order = ['upload','adjust','process','output'];
     const curIdx = order.indexOf(drState.step);
     const targetIdx = order.indexOf(stepId);
-    if (targetIdx > curIdx && drState.step !== 'output') {
-        showSnackbar('请先完成当前步骤', 'warning');
+
+    // 允许回到之前的步骤（点击左侧行程栏）
+    if (targetIdx <= curIdx) {
+        drState.step = stepId;
+        renderWorkspace('daily-report');
         return;
     }
-    drState.step = stepId;
-    renderWorkspace('daily-report');
+
+    // 前进到下一步时检查当前步骤是否完成
+    if (targetIdx === curIdx + 1) {
+        if (drState.step === 'upload' && Object.keys(drState.matched).length < 6) {
+            showSnackbar('请先上传全部 6 个文件', 'warning');
+            return;
+        }
+        drState.step = stepId;
+        renderWorkspace('daily-report');
+        return;
+    }
+
+    // 不允许跳过多步
+    showSnackbar('请先完成当前步骤', 'warning');
 }
 
 function renderStepContent() {
