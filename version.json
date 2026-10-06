@@ -1,6 +1,6 @@
 {
   "version": "0.1.0",
-  "build": 3,
+  "build": 4,
   "name": "非油报表助手",
   "release_date": "2026-10-06",
   "description": "中国石化河南鹤壁石油分公司非油品报表自动化工具",
