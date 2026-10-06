@@ -1,0 +1,39 @@
+{
+  "version": "0.1.0",
+  "build": 2,
+  "name": "非油报表助手",
+  "release_date": "2026-10-06",
+  "description": "中国石化河南鹤壁石油分公司非油品报表自动化工具",
+  "exe_file": "dist/非油报表助手.exe",
+  "exe_size_mb": 56,
+  "reports": [
+    {
+      "id": "daily_report",
+      "name": "非油日报入口",
+      "version": "0.1.0",
+      "status": "active",
+      "description": "非油品基础品类销售进度表（每日通报）"
+    },
+    {
+      "id": "monthly_report",
+      "name": "月度汇总报表",
+      "version": "0.0.0",
+      "status": "pending",
+      "description": "待开发"
+    },
+    {
+      "id": "category_report",
+      "name": "大类分析报表",
+      "version": "0.0.0",
+      "status": "pending",
+      "description": "待开发"
+    },
+    {
+      "id": "station_report",
+      "name": "到站明细报表",
+      "version": "0.0.0",
+      "status": "pending",
+      "description": "待开发"
+    }
+  ]
+}

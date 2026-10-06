@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.spec
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 运行时数据（保留目录结构，不保留运行产生的文件）
+data/output/*
+!data/output/.gitkeep
+data/cache/*
+!data/cache/.gitkeep
+data/uploads/*
+!data/uploads/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
+
+# 临时文件
+.temp/
+*.tmp
+*.bak
+
+# 打包输出
+*.exe
+
+# 系统文件
+Thumbs.db
+.DS_Store

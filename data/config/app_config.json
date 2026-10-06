@@ -1,0 +1,17 @@
+{
+  "app_name": "非油报表助手",
+  "version": "0.1.0",
+  "current_report": "daily_report",
+  "last_run": "2026-10-06 13:05:04",
+  "report_date": "2026-10-06",
+  "monthly_targets": {},
+  "light_oil_sales": {},
+  "adjustments": {},
+  "stations": [],
+  "settings": {
+    "output_xlsx": true,
+    "output_image": true,
+    "auto_open_output": false,
+    "confirm_steps": true
+  }
+}
