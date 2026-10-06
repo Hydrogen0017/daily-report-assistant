@@ -295,9 +295,9 @@ def preview_data():
     tongbao_rows = []
     if "通报" in wb.sheetnames:
         ws = wb["通报"]
-        # 第5行起是数据行（合计+4县区），列: A序号 B县区 C站点 D门零 E目标 F含 G剔 H完成率 I毛利目标 J含 K剔 L完成率 M毛利率 N排名 O综合
+        # 第5行起是数据行（合计+5行县区，含鹤壁），列: A序号 B县区 C站点 D门零 E目标 F含 G剔 H完成率 I毛利目标 J含 K剔 L完成率 M毛利率 N排名 O综合
         raw_rows = []
-        for row in ws.iter_rows(min_row=5, max_row=9, values_only=True):
+        for row in ws.iter_rows(min_row=5, max_row=10, values_only=True):
             raw_rows.append(list(row))
 
         for i, vals in enumerate(raw_rows):
@@ -311,7 +311,7 @@ def preview_data():
                             continue
                         if vals[c] is None:
                             col_sum = 0
-                            for j in range(1, 5):
+                            for j in range(1, len(raw_rows)):
                                 v = raw_rows[j][c] if c < len(raw_rows[j]) else 0
                                 col_sum += v if isinstance(v, (int, float)) else 0
                             vals[c] = col_sum

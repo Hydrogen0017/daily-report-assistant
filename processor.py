@@ -9,6 +9,8 @@ import numpy as np
 from datetime import date
 from pathlib import Path
 from store import logger, UPLOADS_DIR, OUTPUT_DIR, CACHE_DIR, load_config, save_config, get_today_str
+from base_data import (get_station_regions, get_light_oil_sales,
+                       get_quan_coefficients, get_monthly_targets)
 
 # 导出表文件名映射
 UPLOAD_FILES = {
@@ -182,9 +184,8 @@ class DailyReportProcessor:
                 "tongqi_rows": len(self.dalei_tongqi_fuhe) if self.dalei_tongqi_fuhe is not None else 0}
 
     def _get_station_region_map(self):
-        """从配置获取站点→片区映射（预留维护接口）"""
-        regions = self.config.get("station_regions", {})
-        return regions
+        """获取站点→片区映射：配置优先，否则使用内置基础数据"""
+        return get_station_regions(self.config)
 
     def _build_dalei_pivot(self):
         """构建大类透视表（品类×片区 → 含税销售额）"""
@@ -351,8 +352,9 @@ class DailyReportProcessor:
         rule_code_col = self.get_columns(df, ["券规则编码", "规则编码", "规则名称"])
         quan_amt_col = self.get_columns(df, ["拆分后商品用券金额", "拆分后用券金额"])
 
-        # 券系数表（从配置或日报表"券"工作表获取）
-        quan_coefficients = self.config.get("quan_coefficients", {})
+        # 券系数表：配置优先，否则使用内置基础数据（从原日报"券"工作表提取）
+        quan_coefficients = get_quan_coefficients(self.config)
+        logger.info(f"券系数表: {len(quan_coefficients)}条规则", step=7)
 
         if org_col and rule_code_col and quan_amt_col:
             df_tmp = df.iloc[1:].copy() if len(df) > 1 else df.copy()
@@ -442,11 +444,13 @@ class DailyReportProcessor:
                     elif adj.get("type") == "profit_add": adj_profit_add += adj.get("value", 0)
                     elif adj.get("type") == "profit_sub": adj_profit_sub += adj.get("value", 0)
 
-            # 轻油销量（从配置获取）
-            light_oil = self.config.get("light_oil_sales", {}).get(station, 0)
+            # 轻油销量：配置优先，否则使用内置基础数据；兼容带/不带后缀的站名
+            oil_map = get_light_oil_sales(self.config)
+            light_oil = oil_map.get(station, oil_map.get(station_clean, oil_map.get(str(station).strip(), 0)))
 
-            # 片区
-            region = self.config.get("station_regions", {}).get(station, "")
+            # 片区：配置优先，否则使用内置基础数据；兼容带/不带后缀的站名
+            region_map = get_station_regions(self.config)
+            region = region_map.get(station, region_map.get(station_clean, region_map.get(str(station).strip(), "")))
 
             # 计算公式（与附表一致）
             adj_total_sales = sales + adj_add - adj_sub
@@ -527,32 +531,36 @@ class DailyReportProcessor:
         if self.fuhe_pivot is None:
             return None
 
-        # 读取当月目标
-        month_key = f"{self.current_year}-{self.current_month:02d}"
-        targets = self.config.get("monthly_targets", {}).get(month_key, {})
+        # 读取当月目标：配置优先，否则使用内置默认目标
+        targets = get_monthly_targets(self.config, self.current_year, self.current_month)
+        logger.info(f"当月目标: {targets}", step=10)
 
-        regions = ["淇县", "浚县", "市区经营部", "商客"]
+        # 与原日报一致：淇县/浚县/市区经营部/鹤壁(新源站)/商客 五行（鹤壁、商客不参与排名）
+        regions = ["淇县", "浚县", "市区经营部", "鹤壁", "商客"]
         results = []
         for region in regions:
             row_data = self.fuhe_pivot.loc[region] if region in self.fuhe_pivot.index else pd.Series(0, index=self.fuhe_pivot.columns)
             target_sales = targets.get(region, {}).get("sales", 0)
             target_profit = targets.get(region, {}).get("profit", 0)
-            actual_sales = safe_float(row_data.get("销售券后", 0)) / 10000  # 转万元
-            actual_profit = safe_float(row_data.get("毛利卷后", 0)) / 10000
-            sales_rate = actual_sales / target_sales if target_sales else 0
-            profit_rate = actual_profit / target_profit if target_profit else 0
-            # 综合完成率 = 毛利×50% + 基础品类销售×40% + 累月营业额×10%
+            # 完成量(含非非) = 调整后总销售（扣券前），完成量(剔除非非) = 销售券后（扣券后）
+            actual_sales_with = safe_float(row_data.get("调整后总销售", 0)) / 10000  # 转万元
+            actual_sales_without = safe_float(row_data.get("销售券后", 0)) / 10000
+            actual_profit_with = safe_float(row_data.get("调整后毛利", 0)) / 10000
+            actual_profit_without = safe_float(row_data.get("毛利卷后", 0)) / 10000
+            sales_rate = actual_sales_without / target_sales if target_sales else 0
+            profit_rate = actual_profit_without / target_profit if target_profit else 0
+            # 综合完成率 = 毛利×50% + 基础品类销售×40%(封顶130%) + 累月营业额×10%
             composite_rate = profit_rate * 0.5 + min(sales_rate, 1.3) * 0.4 + 0 * 0.1
 
             results.append({
                 "单位": region,
                 "基础品类目标": target_sales,
-                "基础品类完成量含非非": actual_sales,
-                "基础品类完成量剔除非非": actual_sales,
+                "基础品类完成量含非非": actual_sales_with,
+                "基础品类完成量剔除非非": actual_sales_without,
                 "基础品类完成率": sales_rate,
                 "毛利目标": target_profit,
-                "毛利完成量含非非": actual_profit,
-                "毛利完成量剔除非非": actual_profit,
+                "毛利完成量含非非": actual_profit_with,
+                "毛利完成量剔除非非": actual_profit_without,
                 "毛利完成率": profit_rate,
                 "综合完成率": composite_rate
             })
@@ -699,8 +707,15 @@ class DailyReportProcessor:
             for c in range(1, 16):
                 ws.cell(row=r, column=c).border = border
 
-        # 第5行：合计
-        regions = ["合计", "淇县", "浚县", "市区经营部", "商客"]
+        # 第5行起：合计 + 淇县/浚县/市区经营部/鹤壁/商客（与原日报一致，共6行）
+        regions = ["合计", "淇县", "浚县", "市区经营部", "鹤壁", "商客"]
+        # 预计算排名（按综合完成率降序，仅考核县区：淇县/浚县/市区经营部）
+        ranked_regions = ["淇县", "浚县", "市区经营部"]
+        region_rank = {}
+        if self.tongbao_data is not None and len(self.tongbao_data) > 0:
+            ranked = self.tongbao_data[self.tongbao_data["单位"].isin(ranked_regions)].sort_values("综合完成率", ascending=False)
+            for rank_idx, (_, row) in enumerate(ranked.iterrows(), 1):
+                region_rank[row["单位"]] = rank_idx
         for i, region in enumerate(regions):
             r = 5 + i
             ws.cell(row=r, column=1, value=("-" if i == 0 else i)).font = f_bold
@@ -709,10 +724,10 @@ class DailyReportProcessor:
 
             # 填充数据
             if i == 0:
-                # 合计行 = 各县区之和
+                # 合计行 = 各县区之和（第6-10行）
                 for c in range(4, 16):
                     col_letter = get_column_letter(c)
-                    ws.cell(row=r, column=c, value=f"=SUM({col_letter}6:{col_letter}9)")
+                    ws.cell(row=r, column=c, value=f"=SUM({col_letter}6:{col_letter}10)")
                 ws.cell(row=r, column=1).value = "-"
             else:
                 # 各县区数据
@@ -740,8 +755,8 @@ class DailyReportProcessor:
                     comp = safe_float(d.get("综合完成率", 0))
                     ws.cell(row=r, column=15, value=round(comp, 4))
                     ws.cell(row=r, column=15).number_format = "0.00%"
-                    # 排名
-                    ws.cell(row=r, column=14, value=i)
+                    # 排名（按综合完成率降序，鹤壁/商客不参与排名）
+                    ws.cell(row=r, column=14, value=region_rank.get(region, ""))
 
             # 格式化
             for c in range(1, 16):
@@ -784,7 +799,7 @@ class DailyReportProcessor:
         date_h = 40
         header_h = 90           # 两行表头
         row_h = 48
-        regions = ["合计", "淇县", "浚县", "市区经营部", "商客"]
+        regions = ["合计", "淇县", "浚县", "市区经营部", "鹤壁", "商客"]
         data_rows = len(regions)
         table_h = header_h + data_rows * row_h
 
@@ -893,6 +908,14 @@ class DailyReportProcessor:
                 ml = safe_float(d.get("毛利完成量含非非", 0))
                 xs = safe_float(d.get("基础品类完成量含非非", 0))
                 maoli = ml / xs if xs else 0
+                # 排名：仅考核县区（淇县/浚县/市区经营部），其余留空
+                ranked_regions = ["淇县", "浚县", "市区经营部"]
+                if self.tongbao_data is not None and len(self.tongbao_data) > 0:
+                    ranked = self.tongbao_data[self.tongbao_data["单位"].isin(ranked_regions)].sort_values("综合完成率", ascending=False)
+                    rank_map = {row["单位"]: rk for rk, (_, row) in enumerate(ranked.iterrows(), 1)}
+                else:
+                    rank_map = {}
+                rank_val = str(rank_map.get(region, "")) if region in ranked_regions else ""
                 vals = [
                     str(i), region, "",
                     f"{safe_float(d.get('基础品类目标', 0)):.2f}",
@@ -904,7 +927,7 @@ class DailyReportProcessor:
                     f"{safe_float(d.get('毛利完成量剔除非非', 0)):.4f}",
                     f"{profit_rate * 100:.2f}%",
                     f"{maoli * 100:.2f}%",
-                    str(i), f"{comp_rate * 100:.2f}%"
+                    rank_val, f"{comp_rate * 100:.2f}%"
                 ]
 
             for j, (name, w) in enumerate(cols):

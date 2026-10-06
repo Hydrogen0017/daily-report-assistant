@@ -22,6 +22,8 @@ PyInstaller.__main__.run([
     f'--add-data={os.path.join(BASE_DIR, "store.py")}{os.pathsep}.',
     f'--add-data={os.path.join(BASE_DIR, "processor.py")}{os.pathsep}.',
     f'--add-data={os.path.join(BASE_DIR, "backend.py")}{os.pathsep}.',
+    f'--add-data={os.path.join(BASE_DIR, "base_data.py")}{os.pathsep}.',
+    f'--add-data={os.path.join(BASE_DIR, "base_data.json")}{os.pathsep}.',
     '--hidden-import=flask',
     '--hidden-import=pandas',
     '--hidden-import=openpyxl',
