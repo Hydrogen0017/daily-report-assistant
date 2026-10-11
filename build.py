@@ -24,6 +24,7 @@ args = [
     f'--add-data={os.path.join(BASE_DIR, "backend.py")}{os.pathsep}.',
     f'--add-data={os.path.join(BASE_DIR, "base_data.py")}{os.pathsep}.',
     f'--add-data={os.path.join(BASE_DIR, "base_data.json")}{os.pathsep}.',
+    f'--add-data={os.path.join(BASE_DIR, "v02")}{os.pathsep}v02',
     '--hidden-import=flask',
     '--hidden-import=pandas',
     '--hidden-import=openpyxl',

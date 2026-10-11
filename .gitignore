@@ -26,6 +26,9 @@ data/uploads/*
 !data/uploads/.gitkeep
 data/logs/*
 !data/logs/.gitkeep
+data/*.db
+data/*.db-wal
+data/*.db-shm
 
 # 临时文件
 .temp/

@@ -5,12 +5,20 @@
 """
 import json
 import os
+import sys
 import time
 from datetime import datetime, date
 from pathlib import Path
 
-# 项目根目录（store.py 所在目录即为项目根目录）
-BASE_DIR = Path(__file__).resolve().parent
+# 运行时数据根目录：
+# - 开发模式：store.py 所在目录
+# - exe 模式（PyInstaller frozen）：exe 所在目录
+#   （避免临时解压目录被系统清除，数据库/配置/输出随 exe 持久保存；
+#    注意：只读分发资源 frontend/version.json 仍从解压目录读取，见 backend.py）
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 CONFIG_DIR = DATA_DIR / "config"
 LOGS_DIR = DATA_DIR / "logs"
