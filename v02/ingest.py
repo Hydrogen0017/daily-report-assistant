@@ -4,9 +4,11 @@ v0.2 导入器内核：Excel → SQLite 统一数据模型
 （响应评审 R3/R4/R5/R6 补强版）
 
 流程：识别数据源 → pandas 读取 → 结构校验（硬性门禁）
-     → 列映射 → 行级校验清洗（软性，全量记录）
-     → 站名标准化 → 挂接维度 → 事务化快照覆盖入库
-     → 审计日志（ingest_log）+ 会话日志
+      → 行过滤（可选，如养车卡"未售后"）
+      → 列映射 → 行级校验清洗（软性，全量记录）
+      → 站名标准化（正式站名/部门名/清洗变体 → 正式站名，挂接维度）
+      → 事务化快照覆盖入库
+      → 审计日志（ingest_log）+ 会话日志
 
 错误处理（方案第13节）：
 - 锁等待（可重试）→ run_with_retry 指数退避
@@ -23,20 +25,46 @@ from v02.common import clean_station_name, match_column, to_num
 from v02.datasources import identify_file, get_source
 from v02 import db
 
-
-def _station_dim_map(conn):
-    """站名 -> (region, county) 映射（含清洗后名称的兜底匹配）"""
-    rows = conn.execute("SELECT station_name, region, county FROM dim_station").fetchall()
-    direct = {r["station_name"]: (r["region"], r["county"]) for r in rows}
-    cleaned = {clean_station_name(k): v for k, v in direct.items()}
-    return direct, cleaned
+# 文本类标准字段：不做数值化清洗（to_num 会把 'DJ-xxx'、商品名等文本变成 0）
+_TEXT_STD_FIELDS = {"rule_name", "rule_code", "category", "category_code",
+                    "product_name", "quan_type"}
 
 
-def _lookup_dim(station, direct, cleaned):
-    if station in direct:
-        return direct[station]
-    c = clean_station_name(station)
-    return cleaned.get(c, (None, None))
+def _station_alias_map(conn):
+    """站名别名 → (正式站名, region, county)
+
+    v2：别名来源扩展——
+    - 正式站名（便利店名，如"鹤壁市世纪星一站便利店"）
+    - 部门名（站点代码表"站点名称"，如"鹤壁淇滨经营部世纪星一站（含网点）"，
+      养车卡"所属部门"与电子券"用券站点名称"均为此格式）
+    - 上述名称去内部后缀（_t/_z_t...）的清洗变体
+    未命中别名的站名保持原样入库（county 为空并在告警中提示）。
+    """
+    rows = conn.execute(
+        "SELECT station_name, region, county, dept_name FROM dim_station").fetchall()
+    exact = {}
+    for r in rows:
+        target = (r["station_name"], r["region"], r["county"])
+        for n in (r["station_name"], r["dept_name"]):
+            if n:
+                exact[str(n).strip()] = target
+    # 清洗变体（第二遍，setdefault：精确名优先，不覆盖）
+    for n in list(exact.keys()):
+        c = clean_station_name(n)
+        if c and c != n:
+            exact.setdefault(c, exact[n])
+    return exact
+
+
+def _lookup_dim(station, alias):
+    """站名 → (正式站名, region, county)；未命中返回 (原名, None, None)"""
+    s = str(station).strip()
+    if s in alias:
+        return alias[s]
+    c = clean_station_name(s)
+    if c in alias:
+        return alias[c]
+    return (s, None, None)
 
 
 def _write_log(batch_id, ds_id, file_name, report_date, row_count, status, message):
@@ -83,20 +111,33 @@ def _ingest_once(ds, file_path, report_date, batch_id):
         logger.warn(f"[v0.2导入] {ds.name} 结构校验失败: {msg}")
         return {"status": "error", "source_id": ds.id, "rows": 0, "message": msg}
 
+    # ---- 1.5) 行过滤（可选：如养车卡仅保留"未售后"）----
+    filtered_rows = 0
+    if ds.filter_contains:
+        fcol = match_column(df, ds.filter_col)
+        if fcol:
+            before = len(df)
+            df = df[df[fcol].astype(str).str.contains(ds.filter_contains, na=False)]
+            filtered_rows = before - len(df)
+        else:
+            logger.warn(f"[v0.2导入] {ds.name}: 未找到过滤列({ds.filter_col})，"
+                        f"未执行'{ds.filter_contains}'过滤（请人工确认数据口径）")
+
     # ---- 2) 行级构造 + 软性校验（全量记录，不中断）----
     skipped_station = 0        # 站名无效被跳过的行
     nonnumeric_fixed = 0       # 空/非数值字段按0处理计数
     negative_rows = 0          # 负金额行
     unmatched_stations = set() # 未挂到维度的站名
+    station_normalized = 0     # 站名被别名标准化为正式站名的行数
 
     rows = []
     for _, r in df.iterrows():
         raw = r[station_col]
-        station = clean_station_name(str(raw).strip()) if pd.notna(raw) else ""
+        station = str(raw).strip() if pd.notna(raw) else ""
         if not station or station == "nan":
             skipped_station += 1
             continue
-        row = {"report_date": report_date, "station_name": station}
+        row = {"report_date": report_date, "station_raw": station}
         for std_field, src_col in mapping.items():
             row[std_field] = r[src_col] if pd.notna(r[src_col]) else None
         rows.append(row)
@@ -108,6 +149,10 @@ def _ingest_once(ds, file_path, report_date, batch_id):
 
     std_df = pd.DataFrame(rows)
     for std_field in ds.fields:
+        if std_field in _TEXT_STD_FIELDS:
+            if std_field in std_df.columns:   # 文本字段：保留原样（空值保持 None）
+                std_df[std_field] = std_df[std_field].where(std_df[std_field].notna(), None)
+            continue
         if std_field in std_df.columns:
             before_nan = std_df[std_field].isna().sum()
             std_df[std_field] = to_num(std_df[std_field])
@@ -124,7 +169,7 @@ def _ingest_once(ds, file_path, report_date, batch_id):
     conn = db.get_conn()
     try:
         with conn:  # 事务块：正常 COMMIT，任何异常 ROLLBACK（库保持旧快照）
-            direct, cleaned = _station_dim_map(conn)
+            alias = _station_alias_map(conn)
             if ds.dedup:
                 if ds.target_table == "fact_sales_detail":
                     conn.execute("DELETE FROM fact_sales_detail WHERE report_date=? AND period_tag=?",
@@ -133,11 +178,14 @@ def _ingest_once(ds, file_path, report_date, batch_id):
                     conn.execute(f"DELETE FROM {ds.target_table} WHERE report_date=?", (report_date,))
 
             for row in std_df.to_dict("records"):
-                region, county = _lookup_dim(row["station_name"], direct, cleaned)
+                canonical, region, county = _lookup_dim(row["station_raw"], alias)
+                if canonical != row["station_raw"]:
+                    station_normalized += 1
                 if region is None:
-                    unmatched_stations.add(row["station_name"])
+                    unmatched_stations.add(row["station_raw"])
+                row["station_name"] = canonical
                 cols = ["report_date", "station_name", "region", "county"] + list(ds.fields.keys())
-                vals = [row.get("report_date"), row.get("station_name"), region, county] + \
+                vals = [row.get("report_date"), canonical, region, county] + \
                        [row.get(f) for f in ds.fields.keys()]
                 if ds.target_table == "fact_sales_detail":
                     cols.insert(2, "period_tag")
@@ -153,6 +201,8 @@ def _ingest_once(ds, file_path, report_date, batch_id):
     warns = []
     if skipped_station:
         warns.append(f"跳过空站名 {skipped_station} 行")
+    if filtered_rows:
+        warns.append(f"过滤非'{ds.filter_contains}' {filtered_rows} 行")
     if nonnumeric_fixed:
         warns.append(f"{nonnumeric_fixed} 个空/非数值字段按0处理")
     if negative_rows:
@@ -164,8 +214,9 @@ def _ingest_once(ds, file_path, report_date, batch_id):
     _write_log(batch_id, ds.id, str(file_path), report_date, inserted,
                "ok" if not warns else "ok_warn", "; ".join(warns) or None)
     logger.info(f"[v0.2导入] {ds.name} -> {ds.target_table}: {inserted}行 "
-                f"(报表日 {report_date}, 批次 {batch_id})" +
-                (f" | {'; '.join(warns)}" if warns else ""))
+                f"(报表日 {report_date}, 批次 {batch_id})"
+                + (f" | 站名标准化 {station_normalized} 行" if station_normalized else "")
+                + (f" | {'; '.join(warns)}" if warns else ""))
 
     return {"status": "ok", "source_id": ds.id, "rows": inserted,
             "message": f"{ds.name}: {inserted} 行已入库" +

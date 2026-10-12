@@ -167,12 +167,49 @@ MIGRATIONS = [
             created_at    TEXT DEFAULT (datetime('now','localtime'))
         )""",
     ]),
+    # ===== v2（P2 计算管道）：列扩展 + 新维度表 =====
+    # 口径依据（2026-10-11 日报公式逆向验证）：
+    # - fact_crm.non_oil_ratio：CRM券 = 拆分后用券金额 × 非油分摊比例
+    # - fact_electron_quan.rule_code：电子券按规则编码匹配券匹配表(考核剔非非+尾气劵)
+    # - fact_sales_detail.product_name：洗车券 = 当期全"河南油非互动洗车券15元1张"×0.4
+    # - fact_sales_detail.category_code：零售剔烟草按 编码|品类=20 过滤
+    # - dim_station.dept_name/standard_code：养车卡"所属部门"、电子券站名别名、附表标准编码
+    #   （来源：参考表/站点代码.xlsx Sheet1 站点名称/便利店名 + Sheet2 标准编码）
+    # - dim_county_fuel_sales：通报C列县区月轻油（与站级轻油表口径不同，日报硬编码值）
+    # - dim_monthly_cumulative：累月区（1-12月目标/完成，基础品类+毛利双指标）
+    (2, [
+        "ALTER TABLE fact_crm ADD COLUMN non_oil_ratio REAL DEFAULT 0",
+        "ALTER TABLE fact_electron_quan ADD COLUMN rule_code TEXT",
+        "ALTER TABLE fact_sales_detail ADD COLUMN product_name TEXT",
+        "ALTER TABLE fact_sales_detail ADD COLUMN category_code TEXT",
+        "ALTER TABLE dim_station ADD COLUMN dept_name TEXT",
+        "ALTER TABLE dim_station ADD COLUMN standard_code TEXT",
+        """CREATE TABLE IF NOT EXISTS dim_county_fuel_sales (
+            year_month  TEXT NOT NULL,
+            county      TEXT NOT NULL,
+            tons        REAL NOT NULL,
+            updated_at  TEXT DEFAULT (datetime('now','localtime')),
+            PRIMARY KEY (year_month, county)
+        )""",
+        """CREATE TABLE IF NOT EXISTS dim_monthly_cumulative (
+            year_month   TEXT NOT NULL,
+            county       TEXT NOT NULL,
+            month_no     INTEGER NOT NULL,
+            sales_target REAL DEFAULT 0,
+            sales_actual REAL DEFAULT 0,
+            profit_target REAL DEFAULT 0,
+            profit_actual REAL DEFAULT 0,
+            updated_at   TEXT DEFAULT (datetime('now','localtime')),
+            PRIMARY KEY (year_month, county, month_no)
+        )""",
+    ]),
 ]
 
 TABLES = ["fact_sales_detail", "fact_adjustment", "fact_crm",
           "fact_electron_quan", "fact_yangche_ka", "dim_station",
           "dim_quan_coefficient", "dim_light_oil_sales",
-          "dim_monthly_target", "result_tongbao", "ingest_log"]
+          "dim_monthly_target", "result_tongbao", "ingest_log",
+          "dim_county_fuel_sales", "dim_monthly_cumulative"]
 
 
 def get_schema_version(conn):

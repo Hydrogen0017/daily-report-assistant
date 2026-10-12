@@ -127,12 +127,12 @@ function renderHome() {
                             <div style="font-size:13px; color:var(--md-on-surface-variant);">一次选择 6 张导出表，自动识别</div>
                         </div>
                         <div style="flex:1; min-width:180px; padding:16px; background:var(--md-surface-container); border-radius:var(--shape-md);">
-                            <div style="font-weight:600; margin-bottom:4px;">② 确认调整</div>
-                            <div style="font-size:13px; color:var(--md-on-surface-variant);">输入手动调整数据（可选）</div>
+                            <div style="font-weight:600; margin-bottom:4px;">② 自动处理</div>
+                            <div style="font-size:13px; color:var(--md-on-surface-variant);">计算完成后询问是否手动调整</div>
                         </div>
                         <div style="flex:1; min-width:180px; padding:16px; background:var(--md-surface-container); border-radius:var(--shape-md);">
-                            <div style="font-weight:600; margin-bottom:4px;">③ 自动处理</div>
-                            <div style="font-size:13px; color:var(--md-on-surface-variant);">10 步流程自动执行</div>
+                            <div style="font-weight:600; margin-bottom:4px;">③ 确认调整</div>
+                            <div style="font-size:13px; color:var(--md-on-surface-variant);">输入手动调整数据（可选，调整后立即重算）</div>
                         </div>
                         <div style="flex:1; min-width:180px; padding:16px; background:var(--md-surface-container); border-radius:var(--shape-md);">
                             <div style="font-weight:600; margin-bottom:4px;">④ 输出文件</div>
@@ -167,8 +167,8 @@ function getReportIcon(id) {
 const routeMeta = {
     'daily-report': { title: '非油日报入口', steps: [
         {id: 'upload', label: '上传数据', icon: 'cloud_upload'},
+        {id: 'process', label: '计算处理', icon: 'zap'},
         {id: 'adjust', label: '确认调整', icon: 'tune'},
-        {id: 'process', label: '处理数据', icon: 'zap'},
         {id: 'output', label: '输出文件', icon: 'file'}
     ]},
     'monthly-report': { title: '月度汇总报表', pending: true, steps: [] },
@@ -235,8 +235,8 @@ function updateRailStatus() {
     if (!statusEl) return;
     const statusMap = {
         'upload': ['rail-status', '待上传'],
+        'process': ['rail-status processing', '计算中'],
         'adjust': ['rail-status', '待确认调整'],
-        'process': ['rail-status processing', '处理中'],
         'output': ['rail-status done', '已完成']
     };
     const [cls, txt] = statusMap[drState.step] || ['rail-status', '待操作'];
@@ -245,7 +245,7 @@ function updateRailStatus() {
 }
 
 function goStep(stepId) {
-    const order = ['upload','adjust','process','output'];
+    const order = ['upload','process','adjust','output'];
     const curIdx = order.indexOf(drState.step);
     const targetIdx = order.indexOf(stepId);
 
@@ -260,6 +260,10 @@ function goStep(stepId) {
     if (targetIdx === curIdx + 1) {
         if (drState.step === 'upload' && Object.keys(drState.matched).length < 6) {
             showSnackbar('请先上传全部 6 个文件', 'warning');
+            return;
+        }
+        if (drState.step === 'process' && !(drState.processStatus && drState.processStatus.status === 'done')) {
+            showSnackbar('请先完成计算处理', 'warning');
             return;
         }
         drState.step = stepId;
@@ -303,8 +307,8 @@ function renderUpload(container) {
             <div class="upload-result" id="uploadResult"></div>
             <div style="margin-top:24px; display:flex; gap:12px; justify-content:flex-end;">
                 <button class="btn btn-text" onclick="showUploadHelp()">${ICONS.info} 帮助说明</button>
-                <button class="btn btn-filled btn-large" id="btnUploadNext" onclick="goStep('adjust')" ${Object.keys(drState.matched).length < 6 ? 'disabled' : ''}>
-                    下一步: 确认调整 ${ICONS.arrow_forward}
+                <button class="btn btn-filled btn-large" id="btnUploadNext" onclick="goStep('process')" ${Object.keys(drState.matched).length < 6 ? 'disabled' : ''}>
+                    下一步: 计算处理 ${ICONS.arrow_forward}
                 </button>
             </div>
         </div>
@@ -417,57 +421,109 @@ function showUploadHelp() {
 }
 
 // ===================================================
-// 步骤 2：确认调整
+// 步骤 3：确认调整（计算完成后询问；手动调整整月保留，养车卡自动调整每次覆盖）
 // ===================================================
-function renderAdjust(container) {
+async function renderAdjust(container) {
     container.innerHTML = `
         <div class="card">
             <div class="card-header">
                 <div class="card-icon-box">${ICONS.tune}</div>
                 <div style="flex-grow:1;">
-                    <div class="card-title">是否需要进行调整？</div>
-                    <div class="card-subtitle">如有跨站销售、人工调增/调减等情况，请添加调整数据</div>
+                    <div class="card-title">所有计算已完成，是否需要手动调整？</div>
+                    <div class="card-subtitle">如有跨站销售、大客户调拨等情况请添加；调整后立即重算并更新输出文件</div>
                 </div>
             </div>
-            <div id="adjustList" style="margin-bottom:16px;">
-                ${drState.adjustments.length === 0
-                    ? '<p style="color:var(--md-on-surface-variant); padding:24px; text-align:center; background:var(--md-surface-container-low); border-radius:var(--shape-md);">暂无调整数据，可直接开始处理</p>'
-                    : drState.adjustments.map((adj, i) => `
-                        <div class="card" style="margin-bottom:8px; padding:16px;">
-                            <div style="display:flex; align-items:center; gap:12px;">
-                                <div style="flex-grow:1;">
-                                    <div style="font-weight:500;">${adj.station}</div>
-                                    <div style="font-size:12px; color:var(--md-on-surface-variant);">${getAdjustTypeLabel(adj.type)}: ${adj.value} 元 ${adj.reason ? '· ' + adj.reason : ''}</div>
-                                </div>
-                                <button class="btn btn-text btn-icon" onclick="removeAdjustment(${i})" title="删除">${ICONS.delete}</button>
-                            </div>
-                        </div>
-                    `).join('')
-                }
+            <p style="margin:0 0 16px; padding:12px 16px; background:var(--md-surface-container-low); border-radius:var(--shape-md); font-size:13px; color:var(--md-on-surface-variant);">
+                手动调整整月保留（下月 1 日自动失效）；养车卡自动调整每次计算时自动覆盖。本月已有调整会自动参与计算。
+            </p>
+            <div id="adjustList" style="margin-bottom:16px;">正在加载本月调整...</div>
+            <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                <button class="btn btn-tonal" onclick="showAddAdjustDialog()">${ICONS.add} 添加调整</button>
+                <button class="btn btn-text" onclick="refreshAdjustView()">${ICONS.refresh} 刷新</button>
             </div>
-            <button class="btn btn-tonal" onclick="showAddAdjustDialog()">${ICONS.add} 添加调整</button>
             <div style="margin-top:24px; padding-top:24px; border-top:1px solid var(--md-outline-variant); display:flex; gap:12px; justify-content:space-between; align-items:center;">
-                <button class="btn btn-text" onclick="goStep('upload')">${ICONS.arrow_back} 返回上传</button>
-                <div style="display:flex; gap:12px; align-items:center;">
-                    <div class="text-field" style="min-width:200px;">
-                        <label>输出格式</label>
-                        <select id="outputFormatSelect">
-                            <option value="both" ${drState.outputFormat==='both'?'selected':''}>xlsx + 通报图片</option>
-                            <option value="xlsx" ${drState.outputFormat==='xlsx'?'selected':''}>仅 xlsx</option>
-                            <option value="image" ${drState.outputFormat==='image'?'selected':''}>仅通报图片</option>
-                        </select>
-                    </div>
-                    <button class="btn btn-filled btn-large" onclick="startProcess()">${ICONS.play} 开始处理</button>
-                </div>
+                <button class="btn btn-text" onclick="goStep('process')">${ICONS.arrow_back} 返回计算</button>
+                <button class="btn btn-filled btn-large" onclick="goStep('output')">完成调整，查看输出 ${ICONS.arrow_forward}</button>
             </div>
         </div>
+        <div class="card" id="adjustSummaryCard" style="display:none;">
+            <div class="card-header">
+                <div class="card-icon-box">${ICONS.table_chart}</div>
+                <div style="flex-grow:1;"><div class="card-title">计算结果速览</div>
+                <div class="card-subtitle">调整后立即更新（单位：万元）</div></div>
+            </div>
+            <div id="adjustSummaryContent"></div>
+        </div>
     `;
-    const sel = document.getElementById('outputFormatSelect');
-    if (sel) sel.onchange = e => drState.outputFormat = e.target.value;
+    await refreshAdjustView();
+}
+
+async function refreshAdjustView() {
+    try {
+        const [adjRes, prevRes] = await Promise.all([
+            api('/api/daily-report/adjustments'),
+            api('/api/daily-report/preview')
+        ]);
+        drState.monthAdjustments = adjRes.adjustments || [];
+        renderAdjustList();
+        if (prevRes.status === 'success') renderAdjustSummary(prevRes);
+    } catch (e) {
+        const el = document.getElementById('adjustList');
+        if (el) el.innerHTML = `<p style="color:var(--md-error); padding:12px;">加载失败: ${e.message}</p>`;
+    }
+}
+
+function renderAdjustList() {
+    const el = document.getElementById('adjustList');
+    if (!el) return;
+    const adjs = drState.monthAdjustments || [];
+    el.innerHTML = adjs.length === 0
+        ? '<p style="color:var(--md-on-surface-variant); padding:20px; text-align:center; background:var(--md-surface-container-low); border-radius:var(--shape-md);">本月暂无手动调整</p>'
+        : adjs.map(adj => `
+            <div class="card" style="margin-bottom:8px; padding:14px 16px;">
+                <div style="display:flex; align-items:center; gap:12px;">
+                    <div style="flex-grow:1;">
+                        <div style="font-weight:500;">${adj.station_name}</div>
+                        <div style="font-size:12px; color:var(--md-on-surface-variant);">${getAdjustTypeLabel(adj.adj_type)}：${adj.value} 元 ${adj.reason ? '· ' + adj.reason : ''} · ${adj.report_date}</div>
+                    </div>
+                    <button class="btn btn-text btn-icon" onclick="deleteAdjustment(${adj.id})" title="删除">${ICONS.delete}</button>
+                </div>
+            </div>
+        `).join('');
+}
+
+function renderAdjustSummary(prev) {
+    const card = document.getElementById('adjustSummaryCard');
+    const content = document.getElementById('adjustSummaryContent');
+    if (!card || !content) return;
+    const rows = prev.tongbao_rows || [];
+    const fmt = (v, d=2) => (v !== null && v !== undefined && !isNaN(v)) ? Number(v).toFixed(d) : '-';
+    const fmtPct = v => (v !== null && v !== undefined && !isNaN(v)) ? (v * 100).toFixed(1) + '%' : '-';
+    const td = (inner, extra='') => `<td style="border:1px solid var(--md-outline-variant); padding:6px 8px; text-align:right; ${extra}">${inner}</td>`;
+    let html = `<div style="overflow:auto;"><table class="data-table" style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead><tr style="background:var(--md-surface-container-high);">
+            <th style="padding:8px;">单位</th><th>完成量(含非非)</th><th>完成量(剔非非)</th>
+            <th>完成率</th><th>毛利(剔非非)</th><th>毛利完成率</th><th>综合完成率</th>
+        </tr></thead><tbody>`;
+    rows.forEach((d, i) => {
+        const bg = i === 0 ? 'background:var(--md-surface-container); font-weight:600;' : (i % 2 ? 'background:var(--md-surface-container-low);' : '');
+        html += `<tr style="${bg}">`;
+        html += td(d['单位'] ?? '', 'text-align:left;');
+        html += td(fmt(d['基础品类完成含非非']));
+        html += td(fmt(d['基础品类完成剔除非非']));
+        html += td(fmtPct(d['基础品类完成率']));
+        html += td(fmt(d['毛利完成剔除非非']));
+        html += td(fmtPct(d['毛利完成率']));
+        html += td(fmtPct(d['综合完成率']));
+        html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+    content.innerHTML = html;
+    card.style.display = '';
 }
 
 function getAdjustTypeLabel(type) {
-    return {'sales_add':'销售调增','sales_sub':'销售调减','profit_add':'毛利调增','profit_sub':'毛利调减'}[type] || type;
+    return {'sales_add':'销售调增','sales_sub':'销售调减','profit_add':'毛利调增','profit_sub':'毛利调减','retail_add':'零售调增','retail_sub':'零售调减'}[type] || type;
 }
 
 async function showAddAdjustDialog() {
@@ -499,13 +555,13 @@ async function showAddAdjustDialog() {
         <div style="display:flex; flex-direction:column; gap:16px;">
             <div class="text-field"><label>县区 / 片区</label><select id="adjRegion">${regions.map(r => `<option value="${r}">${r}（${byRegion[r].length}站）</option>`).join('')}</select></div>
             <div class="text-field"><label>站点名称</label><select id="adjStation">${stationOpts}</select></div>
-            <div class="text-field"><label>调整类型</label><select id="adjType"><option value="sales_add">销售调增</option><option value="sales_sub">销售调减</option><option value="profit_add">毛利调增</option><option value="profit_sub">毛利调减</option></select></div>
+            <div class="text-field"><label>调整类型</label><select id="adjType"><option value="sales_add">销售调增</option><option value="sales_sub">销售调减</option><option value="profit_add">毛利调增</option><option value="profit_sub">毛利调减</option><option value="retail_add">零售调增</option><option value="retail_sub">零售调减</option></select></div>
             <div class="text-field"><label>调整金额（元）</label><input type="number" id="adjValue" placeholder="0.00" step="0.01"></div>
-            <div class="text-field"><label>调整原因（选填）</label><input type="text" id="adjReason" placeholder="如：跨站销售调整"></div>
+            <div class="text-field"><label>调整原因（选填）</label><input type="text" id="adjReason" placeholder="如：大客户销售调拨"></div>
         </div>
     `, [
         {label:'取消', cls:'btn-text', handler:() => closeModal()},
-        {label:'添加', cls:'btn-filled', action:'confirmAddAdjust'}
+        {label:'添加并重算', cls:'btn-filled', action:'confirmAddAdjust'}
     ]);
     // 县区切换 → 联动刷新站点下拉
     const regionSel = document.getElementById('adjRegion');
@@ -521,48 +577,77 @@ async function showAddAdjustDialog() {
     if (stationSel) stationSel.focus();
 }
 
-function confirmAddAdjust() {
+async function confirmAddAdjust() {
     const station = (document.getElementById('adjStation')?.value || '').trim();
     const type = document.getElementById('adjType').value;
     const value = parseFloat(document.getElementById('adjValue').value);
     const reason = document.getElementById('adjReason').value.trim();
     if (!station) { showSnackbar('请选择站点', 'warning'); return; }
     if (isNaN(value) || value === 0) { showSnackbar('请输入有效金额', 'warning'); return; }
-    drState.adjustments.push({station, type, value, reason});
-    closeModal();
-    showSnackbar('调整已添加', 'success');
-    renderStepContent();
+    const btn = document.querySelector('[data-action-idx] .btn-filled') || null;
+    try {
+        const result = await apiPost('/api/daily-report/adjustments', {station, type, value, reason});
+        if (result.status !== 'success') {
+            showSnackbar('添加失败: ' + (result.message || '未知错误'), 'error');
+            return;
+        }
+        closeModal();
+        showSnackbar('已添加调整并重算完成', 'success');
+        renderAdjustSummary(result);
+        refreshAdjustListOnly(result);
+    } catch (e) {
+        showSnackbar('添加失败: ' + e.message, 'error');
+    }
 }
 
-function removeAdjustment(index) {
-    drState.adjustments.splice(index, 1);
-    renderStepContent();
+async function refreshAdjustListOnly(previewPayload) {
+    try {
+        const adjRes = await api('/api/daily-report/adjustments');
+        drState.monthAdjustments = adjRes.adjustments || [];
+        renderAdjustList();
+    } catch (e) { console.error(e); }
+}
+
+async function deleteAdjustment(adjId) {
+    showConfirm('删除调整', '确定删除这条手动调整并重算吗？', async () => {
+        try {
+            const result = await fetch(`/api/daily-report/adjustments/${adjId}`, {method: 'DELETE'});
+            const data = await result.json();
+            if (data.status === 'success') {
+                showSnackbar('已删除并重算', 'success');
+                refreshAdjustView();
+            } else {
+                showSnackbar('删除失败: ' + (data.message || ''), 'error');
+            }
+        } catch (e) {
+            showSnackbar('删除失败: ' + e.message, 'error');
+        }
+    });
 }
 
 // ===================================================
-// 步骤 3：处理数据
+// 步骤 2：计算处理（导入→计算→渲染，后台线程）
 // ===================================================
 async function startProcess() {
-    showConfirm('确认开始处理', `即将处理非油日报数据，共 ${Object.keys(drState.matched).length} 个数据文件，${drState.adjustments.length} 条调整记录。是否继续？`, async () => {
+    showConfirm('确认开始计算', `即将导入并计算非油日报数据，共 ${Object.keys(drState.matched).length} 个数据文件。本月已有的手动调整与养车卡自动调整都会参与计算。是否继续？`, async () => {
         drState.step = 'process';
+        drState.processStatus = null;
         renderWorkspace('daily-report');
         try {
             const result = await apiPost('/api/daily-report/process', {
-                session_id: drState.sessionId,
-                adjustments: drState.adjustments,
-                output_format: drState.outputFormat
+                session_id: drState.sessionId
             });
             if (result.status === 'started') {
-                showSnackbar('处理已启动', 'success');
+                showSnackbar('计算已启动', 'success');
                 pollProcessStatus();
             } else {
                 showSnackbar('启动失败: ' + result.message, 'error');
-                drState.step = 'adjust';
+                drState.step = 'upload';
                 renderWorkspace('daily-report');
             }
         } catch (e) {
             showSnackbar('处理失败: ' + e.message, 'error');
-            drState.step = 'adjust';
+            drState.step = 'upload';
             renderWorkspace('daily-report');
         }
     });
@@ -579,8 +664,8 @@ function pollProcessStatus() {
                 clearInterval(drState.pollTimer);
                 drState.pollTimer = null;
                 if (status.status === 'done') {
-                    drState.step = 'output';
-                    showSnackbar('处理完成！', 'success');
+                    drState.step = 'adjust';
+                    showSnackbar('计算完成！请确认是否需要手动调整', 'success');
                     setTimeout(() => renderWorkspace('daily-report'), 800);
                 } else {
                     showSnackbar('处理出错: ' + status.message, 'error');
@@ -591,13 +676,26 @@ function pollProcessStatus() {
 }
 
 function renderProcess(container) {
-    const status = drState.processStatus || {status:'processing', progress:0, message:'准备中...', step:0};
+    const status = drState.processStatus;
+    // 未开始：显示开始计算卡片
+    if (!status || status.status === 'idle') {
+        container.innerHTML = `
+            <div class="card" style="text-align:center; padding:40px;">
+                <div style="width:80px; height:80px; margin:0 auto 16px; border-radius:var(--shape-full); background:var(--md-primary-container); color:var(--md-primary); display:flex; align-items:center; justify-content:center;">${ICONS.zap}</div>
+                <h3 style="font-size:20px; font-weight:600; margin-bottom:8px;">准备计算</h3>
+                <p style="color:var(--md-on-surface-variant); margin-bottom:8px;">将导入 6 张导出表并完成全部计算（含养车卡自动调整与本月手动调整）</p>
+                <p style="color:var(--md-on-surface-variant); font-size:13px; margin-bottom:24px;">计算完成后会询问是否需要手动调整，最后输出 xlsx 与通报图片</p>
+                <button class="btn btn-filled btn-large" onclick="startProcess()">${ICONS.play} 开始计算</button>
+            </div>
+        `;
+        return;
+    }
     container.innerHTML = `
         <div class="card">
             <div class="card-header">
                 <div class="card-icon-box">${ICONS.zap}</div>
                 <div style="flex-grow:1;">
-                    <div class="card-title">正在处理数据</div>
+                    <div class="card-title">${status.status === 'done' ? '计算完成' : status.status === 'error' ? '计算出错' : '正在计算'}</div>
                     <div class="card-subtitle" id="progressMessage">${status.message || '准备中...'}</div>
                 </div>
                 <div id="progressPercent" style="font-size:20px; font-weight:600; color:var(--md-primary);">${(status.progress||0)}%</div>
@@ -606,6 +704,15 @@ function renderProcess(container) {
                 <div class="progress-fill" id="progressBar" style="width:${status.progress||0}%"></div>
             </div>
             <div class="step-list" id="stepList"></div>
+            ${status.status === 'done' ? `
+                <div style="margin-top:20px; display:flex; gap:12px; justify-content:flex-end;">
+                    <button class="btn btn-filled" onclick="goStep('adjust')">进入调整确认 ${ICONS.arrow_forward}</button>
+                </div>` : ''}
+            ${status.status === 'error' ? `
+                <div style="margin-top:20px; display:flex; gap:12px; justify-content:flex-end;">
+                    <button class="btn btn-tonal" onclick="startProcess()">${ICONS.refresh} 重新计算</button>
+                    <button class="btn btn-text" onclick="goStep('upload')">${ICONS.arrow_back} 返回上传</button>
+                </div>` : ''}
         </div>
     `;
     updateProgressUI(status);
@@ -621,11 +728,10 @@ function updateProgressUI(status) {
     const stepList = document.getElementById('stepList');
     if (stepList) {
         const steps = [
-            {n:1, text:'加载导出数据文件'},{n:2, text:'大类原始数据入库'},
-            {n:3, text:'剔除烟草的零售销售'},{n:4, text:'洗车券处理'},
-            {n:5, text:'销售额与毛利汇总'},{n:6, text:'CRM券处理'},
-            {n:7, text:'新零售电子券处理'},{n:8, text:'养车卡调整'},
-            {n:9, text:'构建附表'},{n:10, text:'刷新透视表与通报数据'}
+            {n:1, text:'导入 6 张导出表（识别→清洗→维度挂接）'},
+            {n:7, text:'站级附表计算（销售/毛利/三券剔除/零售）'},
+            {n:8, text:'县区通报与综合完成率（含排名与累月）'},
+            {n:9, text:'渲染 xlsx（通报两版+附表）与通报图片'}
         ];
         const cur = status.step || 0;
         stepList.innerHTML = steps.map(s => {
@@ -737,18 +843,24 @@ async function loadPreview() {
                 html += td(fmtPct(d['毛利完成率']));
                 html += td(fmtPct(d['毛利率']));
                 html += td(d['名次'] ?? '-');
-                html += td(d['单位'] ?? '');
-                html += td(fmtPct(d['综合完成率']));
+                html += td(d['排名单位'] ?? '');
+                html += td(fmtPct(d['排名完成率']));
                 html += `</tr>`;
             });
 
             html += `</tbody></table></div>`;
 
-            // 图片预览
+            // 图片预览（通报 + 含鹤壁版）
             if (result.image_url) {
                 html += `<div style="margin-top:24px; text-align:center;">
-                    <h4 style="font-size:15px; font-weight:600; margin-bottom:12px;">通报图片</h4>
+                    <h4 style="font-size:15px; font-weight:600; margin-bottom:12px;">通报图片（剔除鹤壁版）</h4>
                     <img src="${result.image_url}" style="max-width:100%; border:1px solid var(--md-outline-variant); border-radius:var(--shape-md);" />
+                </div>`;
+            }
+            if (result.image_url_hebi) {
+                html += `<div style="margin-top:24px; text-align:center;">
+                    <h4 style="font-size:15px; font-weight:600; margin-bottom:12px;">通报图片（含鹤壁完整版）</h4>
+                    <img src="${result.image_url_hebi}" style="max-width:100%; border:1px solid var(--md-outline-variant); border-radius:var(--shape-md);" />
                 </div>`;
             }
 
@@ -776,7 +888,7 @@ async function loadOutputs() {
                 <div class="file-list-icon">${f.name.endsWith('.png') ? ICONS.image : ICONS.file}</div>
                 <div class="file-list-info">
                     <div class="file-list-name">${f.name}</div>
-                    <div class="file-list-meta">${(f.size/1024).toFixed(1)} KB · ${new Date(f.time).toLocaleString()}</div>
+                    <div class="file-list-meta">${(f.size/1024).toFixed(1)} KB · ${new Date(f.time * 1000).toLocaleString()}</div>
                 </div>
                 <button class="btn btn-tonal" onclick="openOutput('${encodeURIComponent(f.name)}')">${ICONS.visibility} 打开</button>
                 <button class="btn btn-outlined" onclick="downloadOutput('${encodeURIComponent(f.name)}')">${ICONS.download} 下载</button>
@@ -942,16 +1054,31 @@ function renderMaintenance() {
                             <div class="card-icon-box">${ICONS.local_gas_station}</div>
                             <div style="flex-grow:1;">
                                 <div class="card-title">轻油销量维护</div>
-                                <div class="card-subtitle">更新站点轻油销量数据（附表Y列）</div>
+                                <div class="card-subtitle">站级月轻油（附表 Y/Z/AA 列口径），月初更新</div>
                             </div>
                         </div>
                         <p style="margin-bottom:16px; color:var(--md-on-surface-variant); font-size:13px;">
-                            当前使用内置基础数据。后续提供轻油销量文件后，将编写自动解析规则。<br>
-                            <span class="chip warning" style="margin-top:8px;">接口已预留，待文件样例</span>
+                            月初更新各站轻油销量后，附表与日均吨油自动引用。
                         </p>
                         <div style="display:flex; gap:12px; flex-wrap:wrap;">
-                            <button class="btn btn-tonal" onclick="uploadLightOilFile()">${ICONS.upload} 上传文件更新</button>
+                            <button class="btn btn-tonal" onclick="editLightOil()">${ICONS.edit} 编辑轻油销量</button>
                             <button class="btn btn-outlined" onclick="viewLightOil()">${ICONS.visibility} 查看当前</button>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-icon-box">${ICONS.analytics}</div>
+                            <div style="flex-grow:1;">
+                                <div class="card-title">县区月轻油</div>
+                                <div class="card-subtitle">通报 C 列（日均吨油）的县区口径</div>
+                            </div>
+                        </div>
+                        <p style="margin-bottom:16px; color:var(--md-on-surface-variant); font-size:13px;">
+                            通报表日均吨油按县区月轻油合计 ÷ 当月天数计算（与站级附表口径独立）。
+                        </p>
+                        <div style="display:flex; gap:12px;">
+                            <button class="btn btn-tonal" onclick="editCountyFuel()">${ICONS.edit} 更新县区轻油</button>
                         </div>
                     </div>
 
@@ -960,11 +1087,11 @@ function renderMaintenance() {
                             <div class="card-icon-box">${ICONS.description}</div>
                             <div style="flex-grow:1;">
                                 <div class="card-title">月度目标维护</div>
-                                <div class="card-subtitle">跨月时更新基础品类目标和毛利目标</div>
+                                <div class="card-subtitle">基础品类目标与毛利目标（万元）</div>
                             </div>
                         </div>
                         <p style="margin-bottom:16px; color:var(--md-on-surface-variant); font-size:13px;">
-                            跨月时需手动输入各县区的基础品类目标和毛利目标，程序自动更新引用。
+                            月初更新，整月不变；鹤壁与商客无目标。
                         </p>
                         <div style="display:flex; gap:12px;">
                             <button class="btn btn-tonal" onclick="showTargetUpdate()">${ICONS.edit} 更新月度目标</button>
@@ -974,14 +1101,35 @@ function renderMaintenance() {
 
                     <div class="card">
                         <div class="card-header">
-                            <div class="card-icon-box">${ICONS.store}</div>
+                            <div class="card-icon-box">${ICONS.history}</div>
                             <div style="flex-grow:1;">
-                                <div class="card-title">站点片区映射</div>
-                                <div class="card-subtitle">43 个站点的县区归属</div>
+                                <div class="card-title">累月数据维护</div>
+                                <div class="card-subtitle">1-12 月目标/完成（基础品类+毛利），提前导入</div>
                             </div>
                         </div>
+                        <p style="margin-bottom:16px; color:var(--md-on-surface-variant); font-size:13px;">
+                            综合完成率的累月分量引用此数据；已完成月填目标与完成，未到月份留空。
+                        </p>
                         <div style="display:flex; gap:12px;">
-                            <button class="btn btn-tonal" onclick="viewStationRegions()">${ICONS.visibility} 查看映射</button>
+                            <button class="btn btn-tonal" onclick="editMonthlyCumulative()">${ICONS.edit} 编辑累月数据</button>
+                            <button class="btn btn-outlined" onclick="viewMonthlyCumulative()">${ICONS.visibility} 查看当前</button>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-icon-box">${ICONS.store}</div>
+                            <div style="flex-grow:1;">
+                                <div class="card-title">站点代码表导入</div>
+                                <div class="card-subtitle">站名/县区/部门名/标准编码（自动映射）</div>
+                            </div>
+                        </div>
+                        <p style="margin-bottom:16px; color:var(--md-on-surface-variant); font-size:13px;">
+                            导入后自动建立养车卡部门名、电子券站名到正式站名的映射。
+                        </p>
+                        <div style="display:flex; gap:12px;">
+                            <button class="btn btn-tonal" onclick="uploadStationCodes()">${ICONS.upload} 上传站点代码表</button>
+                            <button class="btn btn-outlined" onclick="viewStationRegions()">${ICONS.visibility} 查看站点映射</button>
                         </div>
                     </div>
 
@@ -989,12 +1137,16 @@ function renderMaintenance() {
                         <div class="card-header">
                             <div class="card-icon-box">${ICONS.receipt_long}</div>
                             <div style="flex-grow:1;">
-                                <div class="card-title">券系数表</div>
-                                <div class="card-subtitle">电子券规则编码 → 非油/尾气系数</div>
+                                <div class="card-title">券匹配表导入</div>
+                                <div class="card-subtitle">省公司参考表「券匹配」工作表</div>
                             </div>
                         </div>
+                        <p style="margin-bottom:16px; color:var(--md-on-surface-variant); font-size:13px;">
+                            电子券按规则编码匹配「考核剔非非 + 尾气劵」两比例，重复编码自动去重。
+                        </p>
                         <div style="display:flex; gap:12px;">
-                            <button class="btn btn-tonal" onclick="viewQuanCoefficients()">${ICONS.visibility} 查看券系数</button>
+                            <button class="btn btn-tonal" onclick="uploadQuanMatch()">${ICONS.upload} 上传参考表</button>
+                            <button class="btn btn-outlined" onclick="viewQuanCoefficients()">${ICONS.visibility} 查看券系数</button>
                         </div>
                     </div>
                 </div>
@@ -1023,13 +1175,13 @@ function renderAbout() {
                     <div style="text-align:left;">
                         <h3 style="font-size:16px; font-weight:600; margin-bottom:12px;">功能特性</h3>
                         <ul style="line-height:2; padding-left:20px;">
-                            <li>非油品日报全流程自动化处理（10 步）</li>
-                            <li>6 张导出表一次上传、自动识别</li>
-                            <li>通报表完全按原日报格式输出（含隐藏累月区）</li>
-                            <li>双格式输出：xlsx + 美化通报图片</li>
-                            <li>轻油销量 / 月度目标 / 券系数维护接口</li>
-                            <li>完整运行日志与版本管理</li>
-                            <li>预留多报表入口，可持续扩展</li>
+                            <li>SQLite 数据中心架构：口径与日报公式逐项对齐验证</li>
+                            <li>6 张导出表一次上传、自动识别、维度自动挂接</li>
+                            <li>手动调整整月保留（下月自动失效），养车卡自动调整每次覆盖</li>
+                            <li>通报表双版本输出：剔除鹤壁版 + 含鹤壁完整版（+附表）</li>
+                            <li>同比自动计算、综合完成率三权重、累月数据维护</li>
+                            <li>轻油销量 / 月度目标 / 站点代码 / 券匹配 / 累月 维护接口</li>
+                            <li>完整运行日志、数据库审计与版本管理</li>
                         </ul>
                     </div>
                 </div>
@@ -1039,25 +1191,82 @@ function renderAbout() {
 }
 
 // 维护页面的操作
-async function uploadLightOilFile() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.xlsx,.xls,.csv';
-    input.onchange = async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        const formData = new FormData();
-        formData.append('file', file);
-        const result = await apiUpload('/api/maintenance/light-oil', formData);
-        showSnackbar(result.message || '上传成功', 'success');
-    };
-    input.click();
+async function editLightOil() {
+    let data = {};
+    try {
+        const result = await api('/api/maintenance/light-oil');
+        data = result.light_oil_sales || {};
+    } catch (e) { /* 空数据也可编辑 */ }
+    const entries = Object.entries(data);
+    const ym = new Date().toISOString().slice(0, 7);
+    showModal('编辑轻油销量（' + ym + '）', `
+        <p style="font-size:13px; color:var(--md-on-surface-variant); margin-bottom:12px;">单位：吨；保存后附表 Y/Z/AA 列自动引用</p>
+        <div style="max-height:420px; overflow-y:auto; display:flex; flex-direction:column; gap:8px;">
+            ${entries.length ? entries.map(([k, v]) => `
+                <div style="display:flex; gap:12px; align-items:center;">
+                    <div style="flex:1; font-size:13px;">${k}</div>
+                    <input type="number" step="0.001" class="lo-input" data-station="${k}" value="${v}" style="width:140px; padding:8px;">
+                </div>`).join('') : '<p style="color:var(--md-on-surface-variant);">暂无数据，请先在站点代码导入后维护</p>'}
+        </div>
+    `, [
+        {label:'取消', cls:'btn-text', handler:() => closeModal()},
+        {label:'保存', cls:'btn-filled', action:'saveLightOil'}
+    ]);
+}
+
+async function saveLightOil() {
+    const inputs = document.querySelectorAll('.lo-input');
+    const station_sales = {};
+    inputs.forEach(i => { station_sales[i.dataset.station] = parseFloat(i.value) || 0; });
+    try {
+        await apiPost('/api/maintenance/light-oil', {station_sales});
+        closeModal();
+        showSnackbar('轻油销量已保存', 'success');
+    } catch (e) {
+        showSnackbar('保存失败: ' + e.message, 'error');
+    }
+}
+
+async function editCountyFuel() {
+    let data = {};
+    try {
+        const result = await api('/api/maintenance/county-fuel');
+        data = result.county_fuel || {};
+    } catch (e) { /* ignore */ }
+    const ym = new Date().toISOString().slice(0, 7);
+    const regions = ['淇县', '浚县', '市区经营部'];
+    showModal('更新县区月轻油（' + ym + '）', `
+        <p style="font-size:13px; color:var(--md-on-surface-variant); margin-bottom:12px;">单位：吨；通报 C 列 = 县区月轻油 ÷ 当月天数</p>
+        <div style="display:flex; flex-direction:column; gap:12px;">
+            ${regions.map(r => `
+                <div style="display:flex; gap:12px; align-items:center;">
+                    <div style="font-weight:500; min-width:110px;">${r}</div>
+                    <input type="number" step="0.001" id="cf_${r}" value="${data[r] || ''}" placeholder="0" style="width:160px; padding:8px;">
+                </div>`).join('')}
+        </div>
+    `, [
+        {label:'取消', cls:'btn-text', handler:() => closeModal()},
+        {label:'保存', cls:'btn-filled', action:'saveCountyFuel'}
+    ]);
+}
+
+async function saveCountyFuel() {
+    const regions = ['淇县', '浚县', '市区经营部'];
+    const rows = regions.map(r => ({county: r, tons: parseFloat(document.getElementById(`cf_${r}`).value) || 0}));
+    try {
+        await apiPost('/api/maintenance/county-fuel', {rows});
+        closeModal();
+        showSnackbar('县区轻油已保存', 'success');
+    } catch (e) {
+        showSnackbar('保存失败: ' + e.message, 'error');
+    }
 }
 
 async function viewLightOil() {
     const result = await api('/api/maintenance/light-oil');
     const data = result.light_oil_sales || {};
-    let html = '<table class="data-table"><thead><tr><th>站点</th><th>轻油销量(吨)</th></tr></thead><tbody>';
+    let html = `<p style="margin-bottom:8px; color:var(--md-on-surface-variant);">归属月：${result.year_month || '-'}</p>`;
+    html += '<table class="data-table"><thead><tr><th>站点</th><th>轻油销量(吨)</th></tr></thead><tbody>';
     const entries = Object.entries(data);
     if (entries.length === 0) {
         html += '<tr><td colspan="2" style="text-align:center; color:var(--md-on-surface-variant);">暂无数据</td></tr>';
@@ -1071,62 +1280,193 @@ async function viewLightOil() {
 
 async function showTargetUpdate() {
     const now = new Date();
+    const ym = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    let current = {};
+    try {
+        const result = await api('/api/maintenance/targets?year_month=' + ym);
+        current = result.monthly_targets || {};
+    } catch (e) { /* ignore */ }
     const regions = ['淇县', '浚县', '市区经营部', '商客'];
-    showModal('更新月度目标', `
+    showModal('更新月度目标（' + ym + '）', `
         <div style="display:flex; flex-direction:column; gap:16px;">
-            <div style="display:flex; gap:16px;">
-                <div class="text-field" style="flex:1;"><label>年份</label><input type="number" id="targetYear" value="${now.getFullYear()}"></div>
-                <div class="text-field" style="flex:1;"><label>月份</label><input type="number" id="targetMonth" value="${now.getMonth()+1}" min="1" max="12"></div>
-            </div>
             <p style="font-weight:600;">各县区目标（万元）</p>
             <div id="targetInputs">
-                ${regions.map(r => `
+                ${regions.map(r => {
+                    const t = current[r] || {};
+                    return `
                     <div style="display:flex; gap:12px; margin-bottom:12px; align-items:flex-end;">
                         <div style="font-weight:500; min-width:100px;">${r}</div>
-                        <div class="text-field" style="flex:1;"><label>基础品类目标</label><input type="number" id="target_${r}_sales" step="0.01" placeholder="0"></div>
-                        <div class="text-field" style="flex:1;"><label>毛利目标</label><input type="number" id="target_${r}_profit" step="0.01" placeholder="0"></div>
-                    </div>
-                `).join('')}
+                        <div class="text-field" style="flex:1;"><label>基础品类目标</label><input type="number" id="target_${r}_sales" step="0.01" value="${t.sales_target ?? ''}" placeholder="0"></div>
+                        <div class="text-field" style="flex:1;"><label>毛利目标</label><input type="number" id="target_${r}_profit" step="0.01" value="${t.profit_target ?? ''}" placeholder="0"></div>
+                    </div>`;
+                }).join('')}
             </div>
         </div>
     `, [
         {label:'取消', cls:'btn-text', handler:() => closeModal()},
         {label:'保存', cls:'btn-filled', action:'saveTargets'}
     ]);
+    window._targetYM = ym;
 }
 
 async function saveTargets() {
-    const year = parseInt(document.getElementById('targetYear').value);
-    const month = parseInt(document.getElementById('targetMonth').value);
     const regions = ['淇县', '浚县', '市区经营部', '商客'];
     const targets = {};
     regions.forEach(r => {
         const s = parseFloat(document.getElementById(`target_${r}_sales`).value) || 0;
         const p = parseFloat(document.getElementById(`target_${r}_profit`).value) || 0;
-        targets[r] = {sales: s, profit: p};
+        targets[r] = {sales_target: s, profit_target: p};
     });
-    await apiPost('/api/maintenance/targets', {year, month, targets});
+    await apiPost('/api/maintenance/targets', {year_month: window._targetYM, targets});
     closeModal();
-    showSnackbar(`${year}年${month}月目标已保存`, 'success');
+    showSnackbar(`${window._targetYM} 目标已保存`, 'success');
 }
 
 async function viewTargets() {
     const result = await api('/api/maintenance/targets');
     const data = result.monthly_targets || {};
-    let html = '';
+    let html = `<p style="margin-bottom:8px; color:var(--md-on-surface-variant);">归属月：${result.year_month || '-'}</p>`;
     const entries = Object.entries(data);
     if (entries.length === 0) {
-        html = '<p style="color:var(--md-on-surface-variant);">未配置目标（当前使用内置默认目标）</p>';
-    }
-    entries.forEach(([month, targets]) => {
-        html += `<h3 style="margin:16px 0 8px;">${month}</h3>`;
+        html += '<p style="color:var(--md-on-surface-variant);">未配置目标</p>';
+    } else {
         html += '<table class="data-table"><thead><tr><th>县区</th><th>基础品类目标</th><th>毛利目标</th></tr></thead><tbody>';
-        Object.entries(targets).forEach(([r, t]) => {
-            html += `<tr><td>${r}</td><td>${t.sales||0}</td><td>${t.profit||0}</td></tr>`;
+        entries.forEach(([r, t]) => {
+            html += `<tr><td>${r}</td><td>${t.sales_target||0}</td><td>${t.profit_target||0}</td></tr>`;
         });
         html += '</tbody></table>';
-    });
+    }
     showModal('月度目标', html);
+}
+
+// ===== 累月数据维护 =====
+async function editMonthlyCumulative() {
+    let res = {};
+    try {
+        res = await api('/api/maintenance/monthly-cumulative');
+    } catch (e) { /* ignore */ }
+    const ym = res.year_month || new Date().toISOString().slice(0, 7);
+    const cum = res.cumulative || {};
+    const counties = res.counties && res.counties.length ? res.counties : ['淇县', '浚县', '市区经营部', '商客', '鹤壁'];
+    window._cumData = {ym, cum, counties};
+    const countyOpts = counties.map(c => `<option value="${c}">${c}</option>`).join('');
+    showModal('编辑累月数据（' + ym + '）', `
+        <p style="font-size:13px; color:var(--md-on-surface-variant); margin-bottom:12px;">单位：万元；基础品类与毛利分月填写目标/完成，未到月份留空</p>
+        <div class="text-field" style="margin-bottom:12px;"><label>县区</label><select id="cumCounty">${countyOpts}</select></div>
+        <div style="max-height:400px; overflow-y:auto;">
+            <table class="data-table" style="width:100%; font-size:12px;">
+                <thead><tr><th>月份</th><th>品类目标</th><th>品类完成</th><th>毛利目标</th><th>毛利完成</th></tr></thead>
+                <tbody id="cumBody"></tbody>
+            </table>
+        </div>
+    `, [
+        {label:'取消', cls:'btn-text', handler:() => closeModal()},
+        {label:'保存', cls:'btn-filled', action:'saveMonthlyCumulative'}
+    ]);
+    const sel = document.getElementById('cumCounty');
+    if (sel) {
+        sel.onchange = renderCumBody;
+        renderCumBody();
+    }
+}
+
+function renderCumBody() {
+    const sel = document.getElementById('cumCounty');
+    const body = document.getElementById('cumBody');
+    if (!sel || !body) return;
+    const county = sel.value;
+    const cum = window._cumData.cum[county] || {};
+    body.innerHTML = Array.from({length: 12}, (_, i) => {
+        const m = i + 1;
+        const v = cum[m] || {};
+        return `<tr>
+            <td style="padding:4px 8px;">${m}月</td>
+            <td><input class="cum-in" data-key="sales_target" data-m="${m}" type="number" step="0.01" value="${v.sales_target || ''}" style="width:90px;"></td>
+            <td><input class="cum-in" data-key="sales_actual" data-m="${m}" type="number" step="0.01" value="${v.sales_actual || ''}" style="width:90px;"></td>
+            <td><input class="cum-in" data-key="profit_target" data-m="${m}" type="number" step="0.01" value="${v.profit_target || ''}" style="width:90px;"></td>
+            <td><input class="cum-in" data-key="profit_actual" data-m="${m}" type="number" step="0.01" value="${v.profit_actual || ''}" style="width:90px;"></td>
+        </tr>`;
+    }).join('');
+}
+
+async function saveMonthlyCumulative() {
+    const {ym, cum, counties} = window._cumData;
+    const county = document.getElementById('cumCounty').value;
+    const months = JSON.parse(JSON.stringify(cum[county] || {}));
+    document.querySelectorAll('.cum-in').forEach(inp => {
+        const m = inp.dataset.m, key = inp.dataset.key;
+        const val = parseFloat(inp.value);
+        if (!months[m]) months[m] = {sales_target: 0, sales_actual: 0, profit_target: 0, profit_actual: 0};
+        months[m][key] = isNaN(val) ? 0 : val;
+    });
+    cum[county] = months;
+    try {
+        await apiPost('/api/maintenance/monthly-cumulative', {year_month: ym, cumulative: cum});
+        closeModal();
+        showSnackbar(`${ym} ${county} 累月数据已保存`, 'success');
+    } catch (e) {
+        showSnackbar('保存失败: ' + e.message, 'error');
+    }
+}
+
+async function viewMonthlyCumulative() {
+    const res = await api('/api/maintenance/monthly-cumulative');
+    const cum = res.cumulative || {};
+    let html = `<p style="margin-bottom:8px; color:var(--md-on-surface-variant);">归属月：${res.year_month || '-'}</p>`;
+    Object.entries(cum).forEach(([county, months]) => {
+        const monthsArr = Array.from({length: 12}, (_, i) => months[i+1] || {sales_target:0, sales_actual:0, profit_target:0, profit_actual:0});
+        const sum = k => monthsArr.reduce((s, m) => s + (m[k] || 0), 0);
+        html += `<h4 style="margin:12px 0 4px;">${county}</h4>
+            <p style="font-size:12px; color:var(--md-on-surface-variant); margin:0 0 8px;">品类目标合计 ${sum('sales_target').toFixed(2)} · 品类完成合计 ${sum('sales_actual').toFixed(2)} · 毛利目标合计 ${sum('profit_target').toFixed(2)} · 毛利完成合计 ${sum('profit_actual').toFixed(2)}</p>`;
+    });
+    showModal('累月数据概览', html);
+}
+
+// ===== 站点代码 / 券匹配上传 =====
+async function uploadStationCodes() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.xlsx,.xls';
+    input.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const formData = new FormData();
+        formData.append('file', file);
+        try {
+            const result = await apiUpload('/api/maintenance/import-station-codes', formData);
+            if (result.status === 'ok') {
+                showSnackbar(`站点代码已导入：更新 ${result.stations} 站（新增 ${result.inserted}），共 ${result.total} 站`, 'success');
+            } else {
+                showSnackbar('导入失败: ' + (result.message || ''), 'error');
+            }
+        } catch (err) {
+            showSnackbar('上传失败: ' + err.message, 'error');
+        }
+    };
+    input.click();
+}
+
+async function uploadQuanMatch() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.xlsx,.xls';
+    input.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const formData = new FormData();
+        formData.append('file', file);
+        try {
+            const result = await apiUpload('/api/maintenance/import-quan-match', formData);
+            if (result.status === 'ok') {
+                showSnackbar(`券匹配已导入：${result.rules} 条规则` + (result.warnings && result.warnings.length ? '（' + result.warnings.join('；') + '）' : ''), 'success');
+            } else {
+                showSnackbar('导入失败: ' + (result.message || ''), 'error');
+            }
+        } catch (err) {
+            showSnackbar('上传失败: ' + err.message, 'error');
+        }
+    };
+    input.click();
 }
 
 async function viewStationRegions() {
