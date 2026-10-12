@@ -83,6 +83,16 @@ def check_dependencies():
         sys.exit(0)
 
 
+def _app_version():
+    """读取版本号：exe 模式从解压目录的 version.json 读取，失败则回退内置值"""
+    try:
+        import json
+        with open(BASE_DIR / "version.json", "r", encoding="utf-8") as f:
+            return json.load(f)["version"]
+    except Exception:
+        return "0.2.0"
+
+
 def start_server(port=18080):
     """启动Flask后端"""
     try:
@@ -109,7 +119,7 @@ def start_app():
     try:
         import webview
         webview.create_window(
-            "非油报表助手 v0.1.0",
+            f"非油报表助手 v{_app_version()}",
             f"http://127.0.0.1:{port}",
             width=1280,
             height=800,

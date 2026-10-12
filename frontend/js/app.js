@@ -95,7 +95,7 @@ function renderHome() {
             <div class="home-topbar">
                 <div class="home-app-logo"><svg class="icon" style="width:26px;height:26px;" viewBox="0 0 24 24" fill="none"><path d="M4 17.5 9 12l3.5 2.5L20 6.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="4" cy="17.5" r="1.9" fill="currentColor"/><circle cx="9" cy="12" r="1.9" fill="currentColor"/><circle cx="12.5" cy="14.5" r="1.9" fill="currentColor"/><circle cx="20" cy="6.5" r="1.9" fill="currentColor"/></svg></div>
                 <div class="home-app-name">非油报表助手</div>
-                <div class="home-app-ver">v${appInfo?.version || '0.1.0'} · 中国石化河南鹤壁石油分公司</div>
+                <div class="home-app-ver">v${appInfo?.version || '0.2.0'} · 中国石化河南鹤壁石油分公司</div>
                 <button class="rail-back-btn" onclick="renderMaintenance()" title="维护设置" style="margin-left:4px;">${ICONS.settings}</button>
                 <button class="rail-back-btn" onclick="renderLogs()" title="运行日志">${ICONS.history}</button>
                 <button class="rail-back-btn" onclick="renderAbout()" title="关于">${ICONS.info}</button>
@@ -1164,7 +1164,7 @@ function renderAbout() {
                 <div class="card" style="text-align:center; padding:48px; max-width:720px; margin:0 auto;">
                     <div style="width:80px; height:80px; background:var(--md-primary); border-radius:var(--shape-lg); display:flex; align-items:center; justify-content:center; color:var(--md-on-primary); font-size:40px; font-weight:700; margin:0 auto 24px;">非</div>
                     <h2 style="font-size:24px; font-weight:600; margin-bottom:8px;">非油报表助手</h2>
-                    <p style="color:var(--md-on-surface-variant); margin-bottom:4px;">版本 v${appInfo?.version || '0.1.0'}</p>
+                    <p style="color:var(--md-on-surface-variant); margin-bottom:4px;">版本 v${appInfo?.version || '0.2.0'}</p>
                     <p style="color:var(--md-on-surface-variant); margin-bottom:24px; font-size:13px;">中国石化河南鹤壁石油分公司 · 非油品报表自动化工具</p>
                     <div style="display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin-bottom:32px;">
                         <span class="chip">Python + Flask</span>
