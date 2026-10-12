@@ -40,7 +40,7 @@ def load_config():
             return json.load(f)
     config = {
         "app_name": "非油报表助手",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "current_report": "daily_report",
         "last_run": None,
         "report_date": None,

@@ -1,6 +1,6 @@
 {
   "app_name": "非油报表助手",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "current_report": "daily_report",
   "last_run": "2026-10-13 01:41:47",
   "report_date": "2026-10-13",
